@@ -180,7 +180,21 @@ MCP 工具规则匹配：
 
 ## Review 历史
 
-（待 review）
+### 2026-04-19 - L1 Review
+
+#### 权限模式列表验证
+笔记中权限模式列表正确：
+- `EXTERNAL_PERMISSION_MODES`: acceptEdits, bypassPermissions, default, dontAsk, plan ✅
+- `INTERNAL_PERMISSION_MODES`: 上述 + auto（实验性） ✅
+
+#### 函数签名验证
+- `hasPermissionsToUseTool` 参数签名正确 ✅
+- `ToolPermissionContext` 字段列表正确 ✅
+
+#### 其余内容验证
+- 规则结构 `ToolName(ruleContent)` ✅
+- 三层规则体系 ✅
+- deny 优先原则 ✅
 
 ## 疑问与待查
 
