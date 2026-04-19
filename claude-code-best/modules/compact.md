@@ -107,6 +107,8 @@ MAX_OUTPUT_TOKENS_FOR_SUMMARY = 20_000   // 摘要最大输出 token
 POST_COMPACT_TOKEN_BUDGET = 50_000       // 压缩后恢复 token 预算
 POST_COMPACT_MAX_FILES_TO_RESTORE = 5    // 最大恢复文件数
 MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES = 3 // 连续失败最大次数（熔断）
+MAX_PTL_RETRIES = 3                      // prompt-too-long 重试次数
+MAX_COMPACT_STREAMING_RETRIES = 2        // 流式输出重试次数
 ```
 
 ### 关键设计决策
@@ -315,7 +317,7 @@ shouldAutoCompact(messages, model, ...) {
 
 **2. prompt-too-long 恢复**:
 - 压缩请求本身超限时，`truncateHeadForPTLRetry()` 截断最旧 API round
-- 最大重试次数 `MAX_PTL_RETRIES = 2`
+- 最大重试次数 `MAX_PTL_RETRIES = 3`
 - 截断失败 → 抛出错误，用户被阻塞
 
 **3. 熔断机制**:
@@ -375,6 +377,13 @@ shouldAutoCompact(messages, model, ...) {
 ~~`summaryMessages`: Message[] — 摘要消息列表~~
 > ⚠️ **类型简化**: 源码定义为 `UserMessage[]`，是 Message 的子类型。
 > **实际类型**: `UserMessage[]`（用户消息数组，不含其他消息类型）
+
+### 2026-04-19 - L2/L3 Review
+
+#### MAX_PTL_RETRIES 常量值
+~~最大重试次数 `MAX_PTL_RETRIES = 2`~~
+> ❌ **数值错误**: 源码定义为 `const MAX_PTL_RETRIES = 3`。
+> **正确值**: `MAX_PTL_RETRIES = 3`（最多 3 次重试）
 
 ## 疑问与待查
 
