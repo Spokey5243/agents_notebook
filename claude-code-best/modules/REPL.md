@@ -2,7 +2,7 @@
 
 > 项目: [[claude-code-best]]
 > 文件: src/screens/REPL.tsx (6314 行)
-> 状态: L2-in-progress
+> 状态: L2-complete
 
 ## L1 - 黑盒视角
 
@@ -511,7 +511,45 @@ onSubmit(input, helpers, speculationAccept?, options?) {
 
 ## Review 历史
 
-### 2026-04-19 - L1 Review
+### 2026-04-19 - L2 Review
+
+#### 核心函数表格验证
+源码函数签名验证：
+- `getToolUseContext` 签名正确 (Line 2785-2921) ✅
+- `onQueryEvent` 签名正确 (Line 3039-3165) ✅
+- `onQueryImpl` 签名正确 (Line 3167-3439) ✅
+
+#### QueryGuard 状态机验证
+完整状态转换正确：
+- 三状态：`idle` | `dispatching` | `running` ✅ (Line 30)
+- `tryStart()` → 返回 generation 或 null ✅ (Line 61-67)
+- `end(generation)` → 返回 boolean ✅ (Line 74-80)
+- `reserve()` → dispatching ✅ (Line 38-43)
+- `cancelReservation()` → idle ✅ (Line 49-53)
+
+#### canUseTool 函数验证
+源码 useCanUseTool.tsx：
+- 返回类型 `CanUseToolFn` ✅ (Line 44-53)
+- 参数：`tool`, `input`, `toolUseContext`, `assistantMessage`, `toolUseID`, `forceDecision?` ✅
+
+#### getToolUseContext 返回结构验证
+源码字段正确：
+- `abortController`, `options`, `getAppState`, `setAppState` ✅
+- `messages`, `setMessages`, `readFileState` ✅
+- `setToolJSX`, `addNotification`, `setStreamMode` ✅
+- `computeTools()` 动态计算工具列表 ✅
+
+#### Props 类型验证
+源码 Props 定义完整（Line 757-801）：
+- 所有字段匹配笔记 ✅
+- `thinkingConfig: ThinkingConfig` 必需字段 ✅ (Line 800)
+
+#### onQueryEvent 流式处理验证
+源码处理流程正确：
+- `handleMessageFromStream` 调用 ✅ (Line 3041)
+- compact boundary 消息处理 ✅ (Line 3044-3068)
+- ephemeral progress 替换逻辑 ✅ (Line 3069-3094)
+- API error 阻断 proactive ✅ (Line 3099-3107)
 
 #### Props 结构验证
 源码 Props 类型定义正确（Line 757-801）：
