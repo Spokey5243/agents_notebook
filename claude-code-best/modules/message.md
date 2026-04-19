@@ -390,10 +390,11 @@ deriveUUID(parentUUID: UUID, index: number): UUID {
   return `${parentUUID.slice(0, 24)}${hex}` as UUID
 }
 
-// 示例：
-// parentUUID = 'abc-123-def-456'
-// index = 0 → 'abc-123-def-456000000000000'
-// index = 1 → 'abc-123-def-456000000000001'
+// 示例（标准 UUID 格式 36 字符：8-4-4-4-12）：
+// parentUUID = '550e8400-e29b-41d4-a716-446655440000'
+// slice(0, 24) = '550e8400-e29b-41d4-a716-'（前24字符）
+// index = 0 → hex = '000000000000' → '550e8400-e29b-41d4-a716-000000000000'
+// index = 1 → hex = '000000000001' → '550e8400-e29b-41d4-a716-000000000001'
 ```
 
 **reorderMessagesInUI 实现**（UI 显示重排序）:
@@ -500,6 +501,17 @@ reorderMessagesInUI(messages, syntheticStreamingToolUseMessages) {
 ~~`CollapsedReadSearchGroup` — 折叠的 read/search 组（在类型定义列表中）~~
 > ⚠️ **补充说明**: 源码显示该类型**不继承 `Message`**，是独立结构。
 > **实际定位**: `CollapsedReadSearchGroup` 是 UI 渲染专用类型，被包含在 `RenderableMessage` 联合类型中，但不属于 Message 子类型体系。
+
+#### ProgressMessage 类型定义
+笔记中只写了 `type: 'progress'`, `data: T`，但工厂函数创建的对象还包含 `toolUseID` 和 `parentToolUseID`。
+> ⚠️ **补充说明**: 类型定义只有核心字段，工厂函数会额外注入 `uuid`, `timestamp`, `toolUseID`, `parentToolUseID` 等字段（通过 `[key: string]: unknown` 扩展）。
+
+### 2026-04-19 - L3 Review
+
+#### deriveUUID 示例 UUID 格式
+~~示例：`parentUUID = 'abc-123-def-456'`~~
+> ❌ **格式错误**: 示例使用了不标准的 UUID 格式（长度不对）。
+> **正确示例**: 使用标准 UUID 格式 `550e8400-e29b-41d4-a716-446655440000`（36 字符），`slice(0, 24)` 截取前 24 字符后拼接 12 位 hex。
 
 #### ProgressMessage 类型定义
 笔记中只写了 `type: 'progress'`, `data: T`，但工厂函数创建的对象还包含 `toolUseID` 和 `parentToolUseID`。
