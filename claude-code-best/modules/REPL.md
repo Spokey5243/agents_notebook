@@ -2,7 +2,7 @@
 
 > 项目: [[claude-code-best]]
 > 文件: src/screens/REPL.tsx (6314 行)
-> 状态: L1-complete
+> 状态: L2-in-progress
 
 ## L1 - 黑盒视角
 
@@ -190,7 +190,320 @@ transcript 模式支持消息选择：
 
 ## L2 - 接口视角
 
-（待 L1 完成后填充）
+### 核心函数
+
+| 函数名 | 作用 | 关键参数 | 返回类型 |
+|--------|------|----------|----------|
+| `REPL()` | 主组件 | `Props` | `React.ReactNode` |
+| `onSubmit()` | 用户输入提交 | `input`, `helpers`, `speculationAccept?` | `Promise<void>` |
+| `onQuery()` | query 触发入口 | `newMessages`, `abortController`, `shouldQuery`, `additionalAllowedTools`, `mainLoopModelParam` | `Promise<void>` |
+| `onQueryImpl()` | query 执行实现 | `messagesIncludingNewMessages`, `newMessages`, `abortController`, `shouldQuery`, `additionalAllowedTools`, `mainLoopModelParam`, `effort?` | `Promise<void>` |
+| `onQueryEvent()` | 流式事件处理 | `event` | `void` |
+| `getToolUseContext()` | 构建工具执行上下文 | `messages`, `newMessages`, `abortController`, `mainLoopModel` | `ProcessUserInputContext` |
+| `canUseTool()` | 工具权限检查 | `toolName`, `toolUseID`, `input`, `context` | `Promise<PermissionDecision>` |
+
+### 核心类型
+
+```typescript
+// Props - REPL 组件属性
+export type Props = {
+  commands: Command[]
+  debug: boolean
+  initialTools: Tool[]
+  initialMessages?: MessageType[]
+  pendingHookMessages?: Promise<HookResultMessage[]>
+  initialFileHistorySnapshots?: FileHistorySnapshot[]
+  initialContentReplacements?: ContentReplacementRecord[]
+  initialAgentName?: string
+  initialAgentColor?: AgentColorName
+  mcpClients?: MCPServerConnection[]
+  dynamicMcpConfig?: Record<string, ScopedMcpServerConfig>
+  autoConnectIdeFlag?: boolean
+  strictMcpConfig?: boolean
+  systemPrompt?: string
+  appendSystemPrompt?: string
+  onBeforeQuery?: (input: string, newMessages: MessageType[]) => Promise<boolean>
+  onTurnComplete?: (messages: MessageType[]) => void | Promise<void>
+  disabled?: boolean
+  mainThreadAgentDefinition?: AgentDefinition
+  disableSlashCommands?: boolean
+  taskListId?: string
+  remoteSessionConfig?: RemoteSessionConfig
+  directConnectConfig?: DirectConnectConfig
+  sshSession?: SSHSession
+  thinkingConfig: ThinkingConfig
+}
+
+// Screen - REPL 屏幕 mode
+export type Screen = 'prompt' | 'transcript'
+
+// SpinnerMode - 流式响应模式
+type SpinnerMode = 'requesting' | 'responding' | 'tool-use'
+
+// StreamingToolUse - 流式工具调用进度
+type StreamingToolUse = {
+  toolName: string
+  toolUseID: string
+  status: 'pending' | 'running' | 'completed' | 'error'
+  input?: unknown
+  result?: unknown
+}
+
+// StreamingThinking - 流式 thinking block
+type StreamingThinking = {
+  isStreaming: boolean
+  streamingEndedAt?: number
+  content?: string
+}
+
+// QueryGuard - 并发控制状态机
+class QueryGuard {
+  private _status: 'idle' | 'dispatching' | 'running'
+  private _generation: number
+  
+  tryStart(): number | null  // 开始 query，返回 generation 或 null（已运行）
+  end(generation: number): boolean  // 结束 query，检查 generation
+  reserve(): boolean  // 队列处理预留
+  cancelReservation(): void  // 取消预留
+  
+  subscribe: () => () => void  // React external store subscribe
+  getSnapshot: () => boolean  // React external store snapshot
+}
+
+// ProcessUserInputContext - 工具执行上下文（简化版）
+type ProcessUserInputContext = {
+  abortController: AbortController
+  options: {
+    commands: Command[]
+    tools: Tool[]
+    debug: boolean
+    verbose: boolean
+    mainLoopModel: string
+    thinkingConfig: ThinkingConfig
+    mcpClients: MCPServerConnection[]
+    mcpResources: Record<string, ServerResource[]>
+    isNonInteractiveSession: boolean
+    agentDefinitions: AgentDefinitionsResult
+    customSystemPrompt?: string
+    appendSystemPrompt?: string
+    refreshTools?: () => Tool[]
+  }
+  getAppState: () => AppState
+  setAppState: SetAppState
+  messages: MessageType[]
+  setMessages: (messages: MessageType[]) => void
+  readFileState: FileStateCache
+  setToolJSX: SetToolJSXFn
+  addNotification?: (notif: Notification) => void
+  appendSystemMessage?: (msg: SystemMessage) => void
+  setStreamMode?: (mode: SpinnerMode) => void
+  // ... 更多字段
+}
+```
+
+### getToolUseContext 结构
+
+`getToolUseContext()` 构建完整的工具执行上下文：
+
+```text
+getToolUseContext(messages, newMessages, abortController, mainLoopModel) {
+
+  // 从 store 读取最新状态（避免 closure stale）
+  const s = store.getState()
+
+  // 动态计算工具列表（MCP 工具可能刚连接）
+  const computeTools = () => {
+    const state = store.getState()
+    const assembled = assembleToolPool(state.toolPermissionContext, state.mcp.tools)
+    const merged = mergeAndFilterTools(combinedInitialTools, assembled, state.toolPermissionContext.mode)
+    if (mainThreadAgentDefinition) {
+      return resolveAgentTools(mainThreadAgentDefinition, merged, false, true).resolvedTools
+    }
+    return merged
+  }
+
+  return {
+    abortController,
+    options: {
+      commands,
+      tools: computeTools(),
+      debug,
+      verbose: s.verbose,
+      mainLoopModel,
+      thinkingConfig: s.thinkingEnabled ? thinkingConfig : { type: 'disabled' },
+      mcpClients: mergeClients(initialMcpClients, s.mcp.clients),
+      mcpResources: s.mcp.resources,
+      isNonInteractiveSession: false,
+      agentDefinitions: allowedAgentTypes ? { ...s.agentDefinitions, allowedAgentTypes } : s.agentDefinitions,
+      customSystemPrompt,
+      appendSystemPrompt,
+      refreshTools: computeTools,
+    },
+    getAppState: () => store.getState(),
+    setAppState,
+    messages,
+    setMessages,
+    updateFileHistoryState,
+    updateAttributionState,
+    openMessageSelector,
+    readFileState,
+    setToolJSX,
+    addNotification,
+    appendSystemMessage,
+    sendOSNotification,
+    setStreamMode,
+    onCompactProgress,
+    setInProgressToolUseIDs,
+    resume,
+    setConversationId,
+    requestPrompt,
+    contentReplacementState,
+    // ... 更多字段
+  }
+}
+```
+
+### onQueryEvent 处理流程
+
+`onQueryEvent()` 处理 query 返回的流式事件：
+
+```text
+onQueryEvent(event) {
+  handleMessageFromStream(
+    event,
+    newMessage => {
+      // 处理不同类型消息
+      if (isCompactBoundaryMessage(newMessage)) {
+        // 全屏模式：保留 pre-compact 消息
+        // 普通模式：清空消息列表
+        setMessages(...)
+        setConversationId(randomUUID())  // 强制 row remount
+        proactiveModule?.setContextBlocked(false)  // 恢复 ticks
+      } else if (isEphemeralToolProgress(newMessage)) {
+        // 替换而非追加（Sleep/Bash 每秒 emit）
+        setMessages(oldMessages => {
+          const last = oldMessages.at(-1)
+          if (last?.parentToolUseID === newMessage.parentToolUseID && lastData?.type === newData.type) {
+            const copy = oldMessages.slice()
+            copy[copy.length - 1] = newMessage  // 替换最后一条
+            return copy
+          }
+          return [...oldMessages, newMessage]
+        })
+      } else {
+        setMessages(oldMessages => [...oldMessages, newMessage])
+      }
+
+      // 更新 proactive 状态
+      if (newMessage.type === 'assistant' && newMessage.isApiErrorMessage) {
+        proactiveModule?.setContextBlocked(true)  // API 错误阻断 ticks
+      } else if (newMessage.type === 'assistant') {
+        proactiveModule?.setContextBlocked(false)
+      }
+
+      // slave mode relay
+      if (UDS_INBOX && newMessage.type === 'assistant') {
+        relayPipeMessage({ type: 'stream' | 'error', data: text })
+      }
+    },
+    newContent => setResponseLength(length => length + newContent.length),
+    setStreamMode,
+    setStreamingToolUses,
+    tombstonedMessage => setMessages(old => old.filter(m => m !== tombstonedMessage)),
+    setStreamingThinking,
+    metrics => apiMetricsRef.current.push(metrics),
+    onStreamingText,
+  )
+}
+```
+
+### onSubmit 流程
+
+用户输入提交后的处理流程：
+
+```text
+onSubmit(input, helpers, speculationAccept?, options?) {
+
+  // Step 1: 重置滚动位置
+  repinScroll()
+
+  // Step 2: 恢复 proactive mode
+  if (PROACTIVE || KAIROS) proactiveModule?.resumeProactive()
+
+  // Step 3: pipe routing（远程模式）
+  if (routeToSelectedPipes(input)) {
+    // 显示用户消息，清空输入，return
+    return
+  }
+
+  // Step 4: immediate 命令处理
+  if (input.trim().startsWith('/')) {
+    const commandName = extractCommandName(input)
+    const matchingCommand = commands.find(cmd => cmd.name === commandName)
+
+    if (matchingCommand?.immediate || options?.fromKeybinding) {
+      // 立即执行命令（即使 query 进行中）
+      executeImmediateCommand()
+      return
+    }
+  }
+
+  // Step 5: idle-return 检查
+  if (willowMode !== 'off' && meetsIdleThreshold) {
+    // 显示 dialog/hint 提示用户重新开始
+  }
+
+  // Step 6: 标准提交流程
+  handlePromptSubmit(input, helpers, ...)
+
+  // Step 7: 调用 onQuery
+  onQuery([userMessage], abortController, true, [], mainLoopModel)
+}
+```
+
+### REPL 生命周期
+
+```text
+1. Mount 阶段
+   - 初始化状态（useState, useRef）
+   - 执行 SessionStart hooks（useDeferredHookMessages）
+   - 启动各种 effect hooks（IDE, MCP, swarm 等）
+   - 加载命令列表（useMergedCommands）
+
+2. User Input 阶段
+   - 用户输入（PromptInput 组件）
+   - 解析命令/模式（immediate vs queued）
+   - handleSubmit → onSubmit
+
+3. Query 阶段
+   - QueryGuard.tryStart() 并发检查
+   - getToolUseContext() 构建上下文
+   - for await (event of query({ ... }))
+   - onQueryEvent(event) 处理流式事件
+
+4. Tool Execution 阶段
+   - tool_use block → findToolByName
+   - canUseTool() 权限检查
+   - PermissionRequest dialog（如需用户确认）
+   - tool.call() 执行
+   - tool_result 返回
+
+5. Response 阶段
+   - 流式响应渲染（streamingText）
+   - thinking block 显示（streamingThinking）
+   - Spinner 状态更新
+
+6. Cleanup 阶段
+   - QueryGuard.end()
+   - resetLoadingState()
+   - 历史记录写入
+   - onTurnComplete callback
+
+7. Unmount 阶段
+   - executeSessionEndHooks()
+   - 清理订阅
+   - 保存会话状态
+```
 
 ## L3 - 实现视角
 
