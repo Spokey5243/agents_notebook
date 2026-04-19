@@ -19,8 +19,8 @@
 
 **工厂函数参数**:
 - `createUserMessage`: `content`, `isMeta`, `toolUseResult`, `origin`, `uuid` 等
-- `createAssistantMessage`: `content`, `toolUseBlocks`, `thinkingBlocks`, `usage` 等
-- `createProgressMessage`: `data`, `uuid`, `timestamp`
+- `createAssistantMessage`: `content`, `usage`, `isVirtual`
+- `createProgressMessage`: `toolUseID`, `parentToolUseID`, `data`
 
 ### 输出
 
@@ -122,7 +122,17 @@
 
 ## Review 历史
 
-（待 review）
+### 2026-04-19 - L1 Review
+
+#### createAssistantMessage 参数
+~~`createAssistantMessage`: `content`, `toolUseBlocks`, `thinkingBlocks`, `usage` 等~~
+> ❌ **参数错误**: 源码只有三个参数。
+> **正确参数**: `content`, `usage`, `isVirtual`
+
+#### createProgressMessage 参数
+~~`createProgressMessage`: `data`, `uuid`, `timestamp`~~
+> ❌ **参数错误**: 源码参数是工具调用 ID 相关。
+> **正确参数**: `toolUseID`, `parentToolUseID`, `data`
 
 ## 疑问与待查
 
