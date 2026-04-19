@@ -1,8 +1,8 @@
 # claude-code-best 阅读进度
 
 ## 当前状态
-- 正在读: `permission` (L2 review 完成)
-- 下一步: permission L3
+- 正在读: `permission` (L3 完成)
+- 下一步: permission L3 review
 
 ## 已完成模块
 | 模块 | L1 | L2 | L3 | Review |

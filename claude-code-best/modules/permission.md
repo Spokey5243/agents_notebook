@@ -339,7 +339,239 @@ toolMatchesRule() 匹配规则：
 
 ## L3 - 实现视角
 
-（待 L2 完成后填充）
+### 关键代码路径
+
+**hasPermissionsToUseToolInner 主流程**:
+
+```text
+async function hasPermissionsToUseToolInner(tool, input, context) {
+  // Step 1: 前置检查（bypass 模式也执行）
+  
+  // 1a. 工具级 deny 规则
+  denyRule = getDenyRuleForTool(context, tool)
+  if (denyRule) return { behavior: 'deny', decisionReason: { type: 'rule', rule: denyRule } }
+  
+  // 1b. 工具级 ask 规则（sandbox 可跳过）
+  askRule = getAskRuleForTool(context, tool)
+  if (askRule && !canSandboxAutoAllow) return { behavior: 'ask', decisionReason: { type: 'rule', rule: askRule } }
+  
+  // 1c. 工具特定权限检查
+  toolPermissionResult = await tool.checkPermissions(parsedInput, context)
+  
+  // 1d. 工具返回 deny
+  if (toolPermissionResult.behavior === 'deny') return toolPermissionResult
+  
+  // 1e. requiresUserInteraction 强制 ask
+  if (tool.requiresUserInteraction?.() && toolPermissionResult.behavior === 'ask') return toolPermissionResult
+  
+  // 1f. 内容级 ask 规则（bypass 免疫）
+  if (toolPermissionResult.behavior === 'ask' && decisionReason.rule.ruleBehavior === 'ask') return toolPermissionResult
+  
+  // 1g. safetyCheck（bypass 免疫）
+  if (toolPermissionResult.behavior === 'ask' && decisionReason.type === 'safetyCheck') return toolPermissionResult
+  
+  // Step 2: 模式处理
+  
+  // 2a. bypassPermissions 模式
+  if (mode === 'bypassPermissions') return { behavior: 'allow', ... }
+  
+  // 2b. 工具级 allow 规则
+  allowRule = toolAlwaysAllowedRule(context, tool)
+  if (allowRule) return { behavior: 'allow', decisionReason: { type: 'rule', rule: allowRule } }
+  
+  // Step 3: 结果转换
+  if (toolPermissionResult.behavior === 'passthrough') {
+    return { ...toolPermissionResult, behavior: 'ask', message: createPermissionRequestMessage(...) }
+  }
+  return toolPermissionResult
+}
+```
+
+**permissionRuleValueFromString 解析**:
+
+```text
+function permissionRuleValueFromString(ruleString) {
+  // 查找第一个未转义的 '('
+  openParenIndex = findFirstUnescapedChar(ruleString, '(')
+  
+  if (openParenIndex === -1) {
+    // 无括号 → 工具级规则
+    return { toolName: normalizeLegacyToolName(ruleString) }
+  }
+  
+  // 查找最后一个未转义的 ')'
+  closeParenIndex = findLastUnescapedChar(ruleString, ')')
+  
+  // 确保 ')' 在末尾
+  if (closeParenIndex !== ruleString.length - 1) {
+    return { toolName: normalizeLegacyToolName(ruleString) }  // 格式错误
+  }
+  
+  toolName = ruleString.substring(0, openParenIndex)
+  rawContent = ruleString.substring(openParenIndex + 1, closeParenIndex)
+  
+  // 空内容或通配符 → 工具级规则
+  if (rawContent === '' || rawContent === '*') {
+    return { toolName: normalizeLegacyToolName(toolName) }
+  }
+  
+  // 反转义内容
+  ruleContent = unescapeRuleContent(rawContent)
+  return { toolName, ruleContent }
+}
+
+// 示例：
+// 'Bash' → { toolName: 'Bash' }
+// 'Bash(git status)' → { toolName: 'Bash', ruleContent: 'git status' }
+// 'Bash(python -c "print\\(1\\)")' → { toolName: 'Bash', ruleContent: 'python -c "print(1)"' }
+```
+
+**applyPermissionUpdate 实现**:
+
+```text
+function applyPermissionUpdate(context, update) {
+  switch (update.type) {
+    case 'setMode':
+      return { ...context, mode: update.mode }
+      
+    case 'addRules':
+      ruleKind = update.behavior === 'allow' ? 'alwaysAllowRules' : ...
+      return {
+        ...context,
+        [ruleKind]: {
+          ...context[ruleKind],
+          [update.destination]: [...existing, ...newRules]
+        }
+      }
+      
+    case 'replaceRules':
+      return {
+        ...context,
+        [ruleKind]: {
+          ...context[ruleKind],
+          [update.destination]: newRules  // 替换而非追加
+        }
+      }
+      
+    case 'addDirectories':
+      newDirs = new Map(context.additionalWorkingDirectories)
+      for (dir of update.directories) {
+        newDirs.set(dir, { path: dir, source: update.destination })
+      }
+      return { ...context, additionalWorkingDirectories: newDirs }
+      
+    case 'removeRules':
+      filtered = existing.filter(rule => !rulesToRemove.has(rule))
+      return { ...context, [ruleKind]: { ...context[ruleKind], [update.destination]: filtered } }
+  }
+}
+```
+
+### 边界条件
+
+**1. bypass 免疫检查**
+
+以下检查即使在 bypass 模式也执行：
+- Step 1a: deny 规则
+- Step 1d: 工具返回 deny
+- Step 1f: 内容级 ask 规则
+- Step 1g: safetyCheck（敏感路径）
+
+设计原因：用户显式配置的 deny/ask 规则应优先于 bypass 模式。
+
+**2. 熔断机制**
+
+```typescript
+DENIAL_LIMITS = {
+  maxConsecutive: 3,  // 连续拒绝 3 次
+  maxTotal: 20,       // 总拒绝 20 次
+}
+
+shouldFallbackToPrompting(state) {
+  return state.consecutiveDenials >= 3 || state.totalDenials >= 20
+}
+```
+
+熔断后 auto 模式退回到询问用户，防止 classifier 无限拒绝。
+
+**3. 规则转义**
+
+规则内容中的括号需转义：
+- `(` → `\(`, `)` → `\)`
+- `psycopg2.connect()` → 存储为 `Bash(psycopg2.connect\(\))`
+- 解析时反转义恢复原内容
+
+**4. 工具名别名**
+
+历史工具名映射：
+```typescript
+LEGACY_TOOL_NAME_ALIASES = {
+  Task: 'Agent',
+  KillShell: 'TaskStop',
+  AgentOutputTool: 'TaskOutput',
+  BashOutputTool: 'TaskOutput',
+}
+```
+
+规则中使用旧名称也能匹配当前工具。
+
+**5. sandbox 自动允许**
+
+Bash 工具在 sandbox 启用时可跳过 ask 规则：
+- `SandboxManager.isAutoAllowBashIfSandboxedEnabled()`
+- `shouldUseSandbox(input)` → 命令会被 sandbox 包装
+
+沙盒内执行的命令被认为安全。
+
+**6. classifierApprovable 安全检查**
+
+`safetyCheck` 的 `classifierApprovable` 字段：
+- `true`: 敏感文件路径，classifier 可评估
+- `false`: Windows 路径绕过、跨机器消息，强制拒绝
+
+区分不同类型的安全风险。
+
+**7. passthrough 转换**
+
+工具返回 `passthrough` → 转换为 `ask`：
+- 表示工具没有特殊权限逻辑
+- 默认需要用户确认
+
+### 性能考量
+
+**1. 规则缓存**
+
+规则字符串在启动时解析一次：
+- `getAllowRules()` 等 flatten `ToolPermissionRulesBySource`
+- 返回 `PermissionRule[]` 数组
+
+每次检查遍历数组，O(rules) 复杂度。
+
+**2. getAppState 延迟获取**
+
+`hasPermissionsToUseToolInner` 在 Step 2a 再次调用 `getAppState()`：
+- 确保获取最新状态（hook 可能修改）
+- Step 1 和 Step 2 之间状态可能变化
+
+**3. 解析优化**
+
+规则解析使用单次遍历：
+- `findFirstUnescapedChar` / `findLastUnescapedChar` 线性扫描
+- 无正则表达式（避免回溯）
+
+**4. Agent 过滤优化**
+
+`filterDeniedAgents` 一次性解析所有 deny 规则：
+- 避免 O(agents × rules) 重复解析
+- 使用 Set 快速查找
+
+**5. classifier 异步检查**
+
+`pendingClassifierCheck` 字段支持异步 classifier：
+- 主权限检查先返回 ask
+- classifier 在后台运行，可能自动允许
+
+减少用户等待时间。
 
 ## Review 历史
 
