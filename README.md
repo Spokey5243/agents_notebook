@@ -56,9 +56,9 @@ agents_notebook/
 ## 计划项目
 
 - openclaw
+- hermes
+- deerflow
 - codex-cli
-- langchain-agents
-- crewai
 
 ## 笔记特点
 
