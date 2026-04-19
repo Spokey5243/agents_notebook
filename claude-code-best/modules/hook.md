@@ -198,7 +198,227 @@ hook 可覆盖权限系统，实现自定义审批逻辑。
 
 ## L2 - 接口视角
 
-（待 L1 review 完成后填充）
+### 核心函数
+
+| 函数名 | 作用 | 关键参数 | 返回类型 |
+|--------|------|----------|----------|
+| `executeHooks()` | 通用 hook 执行 | `hookInput`, `toolUseID`, `matchQuery`, `signal`, `timeoutMs` | `AsyncGenerator<AggregatedHookResult>` |
+| `executePreToolUseHooks()` | PreToolUse 执行 | `toolName`, `toolInput`, `toolUseID`, `context` | `AsyncGenerator<AggregatedHookResult>` |
+| `executePostToolUseHooks()` | PostToolUse 执行 | `toolName`, `toolInput`, `toolResult`, `context` | `AsyncGenerator<AggregatedHookResult>` |
+| `executeSessionStartHooks()` | SessionStart 执行 | `cwd`, `context` | `AsyncGenerator<AggregatedHookResult>` |
+| `executePermissionRequestHooks()` | PermissionRequest 执行 | `toolName`, `toolUseID`, `input`, `context` | `AsyncGenerator<AggregatedHookResult>` |
+| `executePreCompactHooks()` | PreCompact 执行 | `trigger`, `customInstructions` | `AsyncGenerator<AggregatedHookResult>` |
+| `executePostCompactHooks()` | PostCompact 执行 | `trigger`, `context` | `AsyncGenerator<AggregatedHookResult>` |
+| `getMatchingHooks()` | 获取匹配的 hook | `appState`, `sessionId`, `hookEvent`, `hookInput` | `HookMatcher[]` |
+| `shouldSkipHookDueToTrust()` | 检查 workspace trust | 无 | `boolean` |
+| `emitHookStarted()` | 广播开始事件 | `hookId`, `hookName`, `hookEvent` | `void` |
+| `emitHookResponse()` | 广播结果事件 | `hookId`, `hookName`, `output` | `void` |
+
+### 核心类型
+
+```typescript
+// HookEvent - 钩子事件类型（28 种）
+export type HookEvent = 
+  | 'PreToolUse' | 'PostToolUse' | 'PostToolUseFailure'
+  | 'Notification' | 'UserPromptSubmit'
+  | 'SessionStart' | 'SessionEnd'
+  | 'Stop' | 'StopFailure'
+  | 'SubagentStart' | 'SubagentStop'
+  | 'PreCompact' | 'PostCompact'
+  | 'PermissionRequest' | 'PermissionDenied'
+  | 'Setup' | 'TeammateIdle'
+  | 'TaskCreated' | 'TaskCompleted'
+  | 'Elicitation' | 'ElicitationResult'
+  | 'ConfigChange' | 'WorktreeCreate' | 'WorktreeRemove'
+  | 'InstructionsLoaded' | 'CwdChanged' | 'FileChanged'
+
+// HookResult - 单个 hook 结果
+export type HookResult = {
+  message?: Message
+  systemMessage?: Message
+  blockingError?: HookBlockingError
+  outcome: 'success' | 'blocking' | 'non_blocking_error' | 'cancelled'
+  preventContinuation?: boolean
+  stopReason?: string
+  permissionBehavior?: 'ask' | 'deny' | 'allow' | 'passthrough'
+  hookPermissionDecisionReason?: string
+  additionalContext?: string
+  initialUserMessage?: string
+  updatedInput?: Record<string, unknown>
+  updatedMCPToolOutput?: unknown
+  permissionRequestResult?: PermissionRequestResult
+  retry?: boolean
+}
+
+// AggregatedHookResult - 多个 hook 聚合结果
+export type AggregatedHookResult = {
+  message?: Message
+  blockingErrors?: HookBlockingError[]
+  preventContinuation?: boolean
+  stopReason?: string
+  hookPermissionDecisionReason?: string
+  permissionBehavior?: PermissionResult['behavior']
+  additionalContexts?: string[]
+  initialUserMessage?: string
+  updatedInput?: Record<string, unknown>
+  updatedMCPToolOutput?: unknown
+  permissionRequestResult?: PermissionRequestResult
+  retry?: boolean
+}
+
+// HookJSONOutput - hook 命令输出
+export type HookJSONOutput = SyncHookJSONOutput | AsyncHookJSONOutput
+
+export type SyncHookJSONOutput = {
+  async?: false
+  continue?: boolean      // 是否继续执行（默认 true）
+  suppressOutput?: boolean // 是否隐藏输出
+  stopReason?: string
+  decision?: 'approve' | 'block'
+  reason?: string
+  systemMessage?: string
+  hookSpecificOutput?: { hookEventName: string; ... }
+}
+
+export type AsyncHookJSONOutput = {
+  async: true
+  asyncTimeout?: number
+}
+
+// HookCallback - 回调类型 hook
+export type HookCallback = {
+  type: 'callback'
+  callback: (input, toolUseID, abort, hookIndex?, context?) => Promise<HookJSONOutput>
+  timeout?: number
+  internal?: boolean
+}
+
+// HookProgress - 进度消息
+export type HookProgress = {
+  type: 'hook_progress'
+  hookEvent: HookEvent
+  hookName: string
+  command: string
+  promptText?: string
+  statusMessage?: string
+}
+
+// HookBlockingError - 阻塞错误
+export type HookBlockingError = {
+  blockingError: string
+  command: string
+}
+
+// PermissionRequestResult - 权限请求结果
+export type PermissionRequestResult =
+  | { behavior: 'allow'; updatedInput?: Record<string, unknown>; updatedPermissions?: PermissionUpdate[] }
+  | { behavior: 'deny'; message?: string; interrupt?: boolean }
+```
+
+### HookInput 结构
+
+```typescript
+// PreToolUseHookInput
+type PreToolUseHookInput = {
+  hook_event_name: 'PreToolUse'
+  session_id: string
+  transcript_path: string
+  tool_name: string
+  tool_input: Record<string, unknown>
+}
+
+// PostToolUseHookInput
+type PostToolUseHookInput = PreToolUseHookInput & {
+  tool_result: string
+  tool_result_is_error?: boolean
+}
+
+// SessionStartHookInput
+type SessionStartHookInput = {
+  hook_event_name: 'SessionStart'
+  session_id: string
+  transcript_path: string
+  cwd: string
+}
+
+// UserPromptSubmitHookInput
+type UserPromptSubmitHookInput = {
+  hook_event_name: 'UserPromptSubmit'
+  session_id: string
+  transcript_path: string
+  prompt: string
+}
+
+// PermissionRequestHookInput
+type PermissionRequestHookInput = {
+  hook_event_name: 'PermissionRequest'
+  session_id: string
+  transcript_path: string
+  tool_name: string
+  tool_input: Record<string, unknown>
+  permission_mode?: string
+  permission_suggestions?: PermissionUpdate[]
+}
+```
+
+### Hook 执行流程
+
+```text
+executeHooks() 内部流程：
+
+1. 前置检查
+   - shouldDisableAllHooksIncludingManaged() → 禁用则退出
+   - CLAUDE_CODE_SIMPLE → simple mode 退出
+   - shouldSkipHookDueToTrust() → 无信任则退出
+
+2. 获取匹配 hook
+   - getMatchingHooks(appState, sessionId, hookEvent, hookInput)
+   - 按 matcher 筛选
+
+3. 快速路径（全部 internal callback）
+   - 直接调用 callback，不启动 span/progress
+   - 测量耗时，返回
+
+4. 常规路径
+   - 启动 hookSpan（beta tracing）
+   - 创建 combinedAbortSignal
+   - 遍历 matchingHooks:
+     a. 获取 hook 配置（command/callback）
+     b. emitHookStarted()
+     c. 执行 hook（shell/callback）
+     d. 解析 JSON 输出
+     e. 处理异步 hook → registerPendingAsyncHook()
+     f. 聚合结果
+   - yield AggregatedHookResult
+
+5. 结束
+   - endHookSpan()
+   - 记录 analytics
+```
+
+### matcher 匹配逻辑
+
+```text
+getMatchingHooks() 匹配逻辑：
+
+1. 获取 hook 配置快照
+   - getHooksConfigFromSnapshot()
+   - 包含 user/project/local/flag/policy sources
+
+2. 过滤条件
+   - hookEvent 匹配
+   - matcher 匹配（如有）
+   
+3. matcher 语法
+   - 无 matcher → 匹配所有事件
+   - "Bash" → 匹配 BashTool
+   - "Bash(git *)" → 匹配 git 命令
+   - 支持通配符和模式
+
+4. Session hook 合并
+   - getSessionHooks() → 会话临时 hook
+   - 与配置快照合并
+```
 
 ## L3 - 实现视角
 
