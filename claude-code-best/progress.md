@@ -1,8 +1,8 @@
 # claude-code-best 阅读进度
 
 ## 当前状态
-- 正在读: abortController (L1-complete)
-- 下一步: L2 → L3 → Review
+- 正在读: 无
+- 下一步: 选择新模块 / 项目总结 / 跨项目对比
 
 ## 已完成模块
 | 模块           | L1  | L2  | L3  | Review          |
