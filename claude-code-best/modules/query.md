@@ -2,7 +2,7 @@
 
 > 项目: [[claude-code-best]]
 > 文件: src/query.ts
-> 状态: L1-in-progress
+> 状态: L1-complete
 
 ## L1 - 黑盒视角
 
@@ -157,7 +157,26 @@ query() {
 
 ## Review 历史
 
-（待 review）
+### 2026-04-19 - L1 Review
+
+#### 输出 - Terminal 类型
+
+~~`reason`: 结束原因 — `'completed'` | `'aborted_streaming'` | `'aborted_tools'` | `'blocking_limit'` | `'max_turns'` | `'prompt_too_long'` | `'model_error'` | `'stop_hook_prevented'` | `'hook_stopped'` | `'image_error'`~~
+
+> ❌ **错误理解**: 假设 Terminal 有明确的类型定义，但 `src/query/transitions.ts` 显示 `Terminal = any` 是 stub 类型。
+> **正确理解**: Terminal 目前是 stub 类型，实际返回值由 query 函数内部约定。从源码 grep 可见，reason 值包括：
+> - `'completed'` — 正常完成
+> - `'aborted_streaming'` — 流式输出中断
+> - `'aborted_tools'` — 工具执行中断
+> - `'blocking_limit'` — 达到阻塞限制
+> - `'max_turns'` — 达到最大轮次（附带 `turnCount`）
+> - `'prompt_too_long'` — prompt 过长
+> - `'model_error'` — 模型错误（附带 `error`）
+> - `'stop_hook_prevented'` — stop hook 阻止继续
+> - `'hook_stopped'` — hook 停止
+> - `'image_error'` — 图片错误
+
+---
 
 ## 疑问与待查
 
