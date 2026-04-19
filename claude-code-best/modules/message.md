@@ -2,7 +2,7 @@
 
 > 项目: [[claude-code-best]]
 > 文件: src/types/message.ts, src/utils/messages.ts
-> 状态: L1-complete
+> 状态: L2-complete
 
 ## L1 - 黑盒视角
 
@@ -114,7 +114,148 @@
 
 ## L2 - 接口视角
 
-（待 L1 review 完成后填充）
+### 核心函数
+
+| 函数名 | 作用 | 关键参数 | 返回类型 |
+|--------|------|----------|----------|
+| `createUserMessage()` | 创建用户消息 | `content`, `isMeta`, `toolUseResult`, `origin`, `uuid` | `UserMessage` |
+| `createAssistantMessage()` | 创建 AI 消息 | `content`, `usage`, `isVirtual` | `AssistantMessage` |
+| `createProgressMessage()` | 创建进度消息 | `toolUseID`, `parentToolUseID`, `data` | `ProgressMessage<P>` |
+| `createCompactBoundaryMessage()` | 创建压缩边界 | `trigger`, `preTokens`, `lastPreCompactMessageUuid` | `SystemCompactBoundaryMessage` |
+| `normalizeMessages()` | 规范化消息列表 | `messages: Message[]` | `NormalizedMessage[]` |
+| `getLastAssistantMessage()` | 获取最后 AI 消息 | `messages` | `AssistantMessage | undefined` |
+| `isNotEmptyMessage()` | 判断消息有内容 | `message` | `boolean` |
+| `isToolUseRequestMessage()` | 判断工具调用请求 | `message` | `boolean`（类型守卫） |
+| `isToolUseResultMessage()` | 判断工具结果 | `message` | `boolean`（类型守卫） |
+| `isSyntheticMessage()` | 判断合成消息 | `message` | `boolean` |
+| `hasToolCallsInLastAssistantTurn()` | 判断最后有工具调用 | `messages` | `boolean` |
+| `deriveUUID()` | 派生 UUID | `parentUUID`, `index` | `UUID` |
+| `deriveShortMessageId()` | 生成短消息 ID | `uuid` | `string` |
+| `mergeUserMessages()` | 合并用户消息 | `a`, `b` | `UserMessage` |
+
+### 核心类型
+
+```typescript
+// MessageType - 消息类型枚举
+export type MessageType = 
+  | 'user' 
+  | 'assistant' 
+  | 'system' 
+  | 'attachment' 
+  | 'progress' 
+  | 'grouped_tool_use' 
+  | 'collapsed_read_search'
+
+// Message - 基类型（所有消息的联合）
+export type Message = {
+  type: MessageType
+  uuid: UUID
+  isMeta?: boolean              // 是否为元消息（不发送给 API）
+  isCompactSummary?: boolean    // 是否为压缩摘要
+  toolUseResult?: unknown       // 工具执行结果
+  isVisibleInTranscriptOnly?: boolean
+  attachment?: { type: string; toolUseID?: string; [key: string]: unknown }
+  message?: {
+    role?: string
+    id?: string
+    content?: MessageContent
+    usage?: BetaUsage | Record<string, unknown>
+    [key: string]: unknown
+  }
+  [key: string]: unknown        // 扩展字段
+}
+
+// UserMessage - 用户消息
+export type UserMessage = Message & {
+  type: 'user'
+  message: NonNullable<Message['message']>
+  imagePasteIds?: number[]      // 粘贴的图片 ID
+}
+
+// AssistantMessage - AI 回复消息
+export type AssistantMessage = Message & {
+  type: 'assistant'
+  message: NonNullable<Message['message']>
+}
+
+// SystemMessage - 系统消息（多种 subtype）
+export type SystemMessage = Message & { type: 'system' }
+export type SystemCompactBoundaryMessage = Message & {
+  type: 'system'
+  compactMetadata: {
+    preservedSegment?: {
+      headUuid: UUID
+      tailUuid: UUID
+      anchorUuid: UUID
+    }
+  }
+}
+
+// AttachmentMessage - 附件消息
+export type AttachmentMessage<T = { type: string }> = Message & {
+  type: 'attachment'
+  attachment: T
+}
+
+// ProgressMessage - 进度消息
+export type ProgressMessage<T = unknown> = Message & {
+  type: 'progress'
+  data: T
+}
+
+// ContentItem - 内容元素（单个 block）
+export type ContentItem = ContentBlockParam | ContentBlock
+
+// MessageContent - 消息内容（string 或 block 数组）
+export type MessageContent = string | ContentBlockParam[] | ContentBlock[]
+
+// NormalizedMessage - 规范化消息（每个消息只有一个 content block）
+export type NormalizedMessage = Message
+export type NormalizedUserMessage = UserMessage
+export type NormalizedAssistantMessage = AssistantMessage
+
+// GroupedToolUseMessage - 工具调用分组
+export type GroupedToolUseMessage = Message & {
+  type: 'grouped_tool_use'
+  toolName: string
+  messages: NormalizedAssistantMessage[]
+  results: NormalizedUserMessage[]
+  displayMessage: NormalizedAssistantMessage | NormalizedUserMessage
+}
+
+// CollapsedReadSearchGroup - 折叠的 read/search 组
+export type CollapsedReadSearchGroup = {
+  type: 'collapsed_read_search'
+  uuid: UUID
+  searchCount: number
+  readCount: number
+  readFilePaths: string[]
+  searchArgs: string[]
+  messages: CollapsibleMessage[]
+  displayMessage: CollapsibleMessage
+}
+```
+
+### 函数签名详解
+
+**类型守卫函数**（返回 `message is X` 类型）：
+
+```typescript
+// isToolUseRequestMessage - 判断是否为工具调用请求
+export function isToolUseRequestMessage(
+  message: Message,
+): message is ToolUseRequestMessage  // 类型守卫返回类型
+
+// isToolUseResultMessage - 判断是否为工具结果
+export function isToolUseResultMessage(
+  message: Message,
+): message is ToolUseResultMessage
+
+// getLastAssistantMessage - 从末尾查找最后一条 assistant 消息
+export function getLastAssistantMessage(
+  messages: Message[],
+): AssistantMessage | undefined
+```
 
 ## L3 - 实现视角
 
