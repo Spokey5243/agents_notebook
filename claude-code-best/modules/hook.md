@@ -1017,7 +1017,45 @@ Beta tracing 启用时：
 - matcher 过滤机制 ✅
 - Workspace Trust 安全检查 ✅
 
-### 2026-04-19 - L2 Review
+### 2026-04-19 - L3 Review
+
+#### executeHooks 流程验证
+源码步骤正确：
+- Step 1: shouldDisableAllHooksIncludingManaged() ✅
+- Step 3: 快速路径（userHooks.length === 0）✅
+- Step 4: 并行执行 hookPromises ✅
+- Step 5: 聚合结果逻辑 ✅
+
+#### Internal Hook 快速路径验证
+源码注释确认：
+- `6.01µs → ~1.8µs per PostToolUse hit (-70%)` ✅ (Line 2178)
+- 跳过 span/progress/abortSignal/processHookJSONOutput ✅
+
+#### Deduplication 快速路径验证
+源码注释确认：
+- `44x faster in microbench` ✅ (Line 1860)
+- Skip 6-pass filter + 4×Map + 4×Array.from ✅
+
+#### Exit Code 语义验证
+源码确认：
+- `exit code 2` = blocking error ✅ (Line 237, 2786, 3469)
+- `outcome: 'blocking'`, `'cancelled'`, `'non_blocking_error'` ✅
+
+#### matchesPattern 实现验证
+源码逻辑正确：
+- 无 matcher 或 `*` → true ✅
+- 管道分隔 `Bash|Read` → 多个精确匹配 ✅
+- 正则匹配 `Bash(git *)` ✅
+
+#### AsyncHookRegistry 验证
+源码确认：
+- 默认 timeout 15000ms ✅ (Line 51)
+- `checkForAsyncHookResponses()` 流程 ✅
+- `finalizePendingAsyncHooks()` 清理逻辑 ✅
+
+#### TIMEOUT 常量验证
+- `TOOL_HOOK_EXECUTION_TIMEOUT_MS = 10 * 60 * 1000` ✅ (Line 167)
+- `SESSION_END_HOOK_TIMEOUT_MS_DEFAULT = 1500` ✅ (Line 176)
 
 #### executeHooks 流程验证
 源码步骤正确：
