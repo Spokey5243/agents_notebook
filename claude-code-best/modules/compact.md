@@ -2,7 +2,7 @@
 
 > 项目: [[claude-code-best]]
 > 文件: src/services/compact/
-> 状态: L1-complete
+> 状态: L3-complete
 
 ## L1 - 黑盒视角
 
@@ -136,11 +136,236 @@ MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES = 3 // 连续失败最大次数（熔断）
 
 ## L2 - 接口视角
 
-（待 L1 review 完成后填充）
+### 核心函数
+
+| 函数名                               | 作用                   | 关键参数                                                        |
+| --------------------------------- | -------------------- | ----------------------------------------------------------- |
+| `compactConversation()`           | 主压缩入口，生成摘要           | `messages`, `context`, `cacheSafeParams`, `isAutoCompact`   |
+| `autoCompactIfNeeded()`           | 自动压缩判断和执行            | `messages`, `toolUseContext`, `tracking`, `snipTokensFreed` |
+| `shouldAutoCompact()`             | 判断是否需要自动压缩           | `messages`, `model`, `querySource`, `snipTokensFreed`       |
+| `getAutoCompactThreshold()`       | 计算压缩阈值               | `model`                                                     |
+| `getEffectiveContextWindowSize()` | 获取有效上下文窗口            | `model`                                                     |
+| `groupMessagesByApiRound()`       | 按 API round 分组消息     | `messages`                                                  |
+| `truncateHeadForPTLRetry()`       | prompt-too-long 截断重试 | `messages`, `ptlResponse`                                   |
+| `buildPostCompactMessages()`      | 构建压缩后消息列表            | `result: CompactionResult`                                  |
+| `stripImagesFromMessages()`       | 移除图片减少 token         | `messages`                                                  |
+| `getCompactPrompt()`              | 获取压缩提示词              | `customInstructions?`                                       |
+| `partialCompactConversation()`    | 部分压缩（pivot 位置）       | `allMessages`, `pivotIndex`, `direction`                    |
+
+### 核心类型
+
+```typescript
+// CompactionResult - 压缩结果
+export interface CompactionResult {
+  boundaryMarker: SystemMessage              // 边界标记
+  summaryMessages: UserMessage[]             // 摘要消息
+  attachments: AttachmentMessage[]           // 恢复附件
+  hookResults: HookResultMessage[]           // hook 结果
+  messagesToKeep?: Message[]                 // 保留消息
+  userDisplayMessage?: string                // 用户显示消息
+  preCompactTokenCount?: number              // 压缩前 token
+  postCompactTokenCount?: number             // 压缩后 token
+  truePostCompactTokenCount?: number         // 真实输出 token
+  compactionUsage?: ReturnType<typeof getTokenUsage>  // API 使用统计
+}
+
+// AutoCompactTrackingState - 自动压缩追踪状态
+export type AutoCompactTrackingState = {
+  compacted: boolean           // 本轮是否压缩
+  turnCounter: number          // 对话轮次
+  turnId: string               // 每轮唯一 ID
+  consecutiveFailures?: number // 连续失败次数（熔断）
+}
+
+// RecompactionInfo - 重压缩信息
+export type RecompactionInfo = {
+  isRecompactionInChain: boolean       // 是否链内重压缩
+  turnsSincePreviousCompact: number    // 上次压缩后轮次
+  previousCompactTurnId?: string       // 上次压缩 turn ID
+  autoCompactThreshold: number         // 压缩阈值
+  querySource?: QuerySource            // 调用来源
+}
+
+// SessionMemoryCompactConfig - session memory 压缩配置
+export type SessionMemoryCompactConfig = {
+  minTokens: number            // 最小保留 token
+  minTextBlockMessages: number // 最小保留消息数
+  maxTokens: number            // 最大保留 token（硬上限）
+}
+```
 
 ## L3 - 实现视角
 
-（待 L2 完成后填充）
+### 关键代码路径
+
+**compactConversation 主流程**:
+
+```text
+compactConversation(messages, context, ...) {
+  // 1. 前置检查
+  if (messages.length === 0) throw Error
+  
+  preCompactTokenCount = tokenCountWithEstimation(messages)
+  
+  // 2. 执行 preCompact hooks
+  hookResult = await executePreCompactHooks({ trigger, customInstructions }, ...)
+  customInstructions = mergeHookInstructions(customInstructions, hookResult.newCustomInstructions)
+  
+  // 3. 构建 summary request
+  compactPrompt = getCompactPrompt(customInstructions)
+  summaryRequest = createUserMessage({ content: compactPrompt })
+  
+  // 4. 循环尝试生成摘要（处理 prompt-too-long）
+  for (;;) {
+    summaryResponse = await streamCompactSummary({ messages, summaryRequest, ... })
+    summary = getAssistantMessageText(summaryResponse)
+    
+    if (!summary?.startsWith(PROMPT_TOO_LONG_ERROR_MESSAGE)) break
+    
+    // prompt-too-long: 截断最旧消息重试（最多 2 次）
+    ptlAttempts++
+    truncated = truncateHeadForPTLRetry(messages, summaryResponse)
+    if (!truncated) throw Error  // 无法恢复
+    messagesToSummarize = truncated
+  }
+  
+  // 5. 创建附件（恢复文件、skills、plan）
+  attachments = [
+    ...createPostCompactFileAttachments(appState),
+    ...createSkillAttachmentIfNeeded(appState),
+    ...createPlanAttachmentIfNeeded(appState),
+  ]
+  
+  // 6. 创建边界标记
+  boundaryMarker = createCompactBoundaryMessage({ ... })
+  
+  // 7. 执行 postCompact hooks
+  await executePostCompactHooks({ trigger, ... }, ...)
+  
+  // 8. 返回结果
+  return {
+    boundaryMarker,
+    summaryMessages: [summaryRequest, createUserMessage({ content: summary })],
+    attachments,
+    hookResults,
+    ...
+  }
+}
+```
+
+**autoCompactIfNeeded 主流程**:
+
+```text
+autoCompactIfNeeded(messages, toolUseContext, tracking, ...) {
+  // 1. 检查禁用状态
+  if (isEnvTruthy(DISABLE_COMPACT)) return { wasCompacted: false }
+  
+  // 2. 熔断检查
+  if (tracking?.consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+    return { wasCompacted: false }
+  }
+  
+  // 3. 判断是否需要压缩
+  shouldCompact = await shouldAutoCompact(messages, model, querySource, ...)
+  if (!shouldCompact) return { wasCompacted: false }
+  
+  // 4. 构建 recompactionInfo
+  recompactionInfo = {
+    isRecompactionInChain: tracking?.compacted === true,
+    turnsSincePreviousCompact: tracking?.turnCounter ?? -1,
+    autoCompactThreshold: getAutoCompactThreshold(model),
+    ...
+  }
+  
+  // 5. 执行压缩
+  result = await compactConversation(messages, context, ..., true, recompactionInfo)
+  
+  // 6. 后置清理
+  await runPostCompactCleanup(...)
+  
+  // 7. 返回结果
+  return { wasCompacted: true, compactionResult: result }
+}
+```
+
+**shouldAutoCompact 判断逻辑**:
+
+```text
+shouldAutoCompact(messages, model, ...) {
+  // 1. 检查禁用
+  if (!isAutoCompactEnabled()) return false
+  
+  // 2. Context collapse 模式冲突检查（互斥）
+  if (isContextCollapseEnabled()) return false
+  
+  // 3. Token 计算
+  tokenCount = tokenCountWithEstimation(messages) - snipTokensFreed
+  threshold = getAutoCompactThreshold(model)
+  
+  // 4. 判断是否超阈值
+  { isAboveAutoCompactThreshold } = calculateTokenWarningState(tokenCount, model)
+  return isAboveAutoCompactThreshold
+}
+```
+
+### 边界条件
+
+**1. 空消息处理**:
+- `messages.length === 0` → 抛出 `ERROR_MESSAGE_NOT_ENOUGH_MESSAGES`
+
+**2. prompt-too-long 恢复**:
+- 压缩请求本身超限时，`truncateHeadForPTLRetry()` 截断最旧 API round
+- 最大重试次数 `MAX_PTL_RETRIES = 2`
+- 截断失败 → 抛出错误，用户被阻塞
+
+**3. 熔断机制**:
+- `consecutiveFailures >= 3` → 停止尝试自动压缩
+- 防止无效 API 调用浪费（曾有 1279 个 session 连续失败 50+ 次）
+
+**4. Context Collapse 互斥**:
+- `isContextCollapseEnabled() === true` → 禁用 autoCompact
+- collapse 是另一种上下文管理方式，两者不应同时触发
+
+**5. 消息分组边界**:
+- `groupMessagesByApiRound()` 以 assistant message id 变化为边界
+- 保证每个 group 是 API-safe 的（tool_use 都有对应的 tool_result）
+
+**6. 部分压缩方向**:
+- `direction = 'from'`: 压缩 pivot 后的消息，保留之前（cache 有效）
+- `direction = 'up_to'`: 压缩 pivot 前的消息，保留之后（cache 无效）
+
+### 性能考量
+
+**1. Prompt Cache Sharing**:
+- `tengu_compact_cache_prefix` feature gate 控制是否共享 cache
+- Fork agent 路径复用父对话的 prompt cache（默认启用）
+- 98% 的不共享路径是 cache miss，成本高
+
+**2. 异步流式处理**:
+- `streamCompactSummary()` 使用流式 API 调用
+- 通过 `setStreamMode('requesting')` 显示进度
+- `context.onCompactProgress` 回调通知 UI
+
+**3. Token 预算分配**:
+- `POST_COMPACT_TOKEN_BUDGET = 50_000`
+  - `POST_COMPACT_MAX_TOKENS_PER_FILE = 5_000`（单文件上限）
+  - `POST_COMPACT_SKILLS_TOKEN_BUDGET = 25_000`（skills 总预算）
+  - `POST_COMPACT_MAX_TOKENS_PER_SKILL = 5_000`（单 skill 上限）
+- 每类恢复内容有独立预算，防止单类过大
+
+**4. MicroCompact 轻量压缩**:
+- 只压缩特定 tool result（FILE_READ, SHELL, GLOB 等）
+- 时间触发：`TIME_BASED_MC_CLEARED_MESSAGE` 清除旧内容
+- 大小触发：超过阈值时截断
+
+**5. SessionMemoryCompact 特化**:
+- 保留最后 N 条消息 + session memory 摘要
+- 配置：`minTokens: 10_000`, `minTextBlockMessages: 5`, `maxTokens: 40_000`
+- 用于 fork agent 的上下文管理
+
+**6. 图片移除优化**:
+- `stripImagesFromMessages()` 将 `[image]` 替换为文本标记 `[image]`
+- 减少 token 数，防止压缩请求本身超限
 
 ## Review 历史
 
