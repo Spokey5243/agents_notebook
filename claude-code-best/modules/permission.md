@@ -357,6 +357,21 @@ toolMatchesRule() 匹配规则：
 #### 其余内容验证
 - 规则结构 `ToolName(ruleContent)` ✅
 - 三层规则体系 ✅
+
+### 2026-04-19 - L2 Review
+
+#### 权限检查流程验证
+源码步骤编号验证正确：
+- Step 1a: 工具级 deny 规则 ✅
+- Step 1b: 工具级 ask 规则 ✅
+- Step 1c: tool.checkPermissions() ✅
+- Step 2a: bypassPermissions 模式 ✅
+- Step 2b: 工具级 allow 规则 ✅
+
+#### 类型定义验证
+- `PermissionDecisionReason` 类型枚举正确 ✅
+- `ToolPermissionContext` 字段列表正确 ✅
+- `PermissionRuleValue` 结构正确 ✅
 - deny 优先原则 ✅
 
 ## 疑问与待查
