@@ -448,7 +448,57 @@ Claude Code 多组件监听同一 signal
 
 ## Review 历史
 
-### 2026-04-19 - L2 Review
+### 2026-04-19 - L3 Review
+
+#### createAbortController 实现验证
+源码验证正确：
+- `const controller = new AbortController()` — 第 19 行 ✅
+- `setMaxListeners(maxListeners, controller.signal)` — 第 20 行 ✅
+- 默认值 `DEFAULT_MAX_LISTENERS = 50` — 第 6 行 ✅
+
+#### createChildAbortController 实现验证
+源码验证正确：
+- Fast path: `if (parent.signal.aborted) { child.abort(...) }` — 第 75-78 行 ✅
+- WeakRef: `new WeakRef(child)` / `new WeakRef(parent)` — 第 83-84 行 ✅
+- `addEventListener('abort', handler, { once: true })` — 第 87 行 ✅
+- 子 abort 时清理父 listener — 第 92-96 行 ✅
+
+#### 模块级函数验证
+源码验证正确：
+- `propagateAbort` 是模块级函数，用 `this: WeakRef<AbortController>` 绑定 — 第 30-36 行 ✅
+- `removeAbortHandler` 是模块级函数 — 第 44-53 行 ✅
+
+#### 边界条件验证（测试覆盖）
+测试文件验证正确：
+- 父中断传播到子 — test 第 39-45 行 ✅
+- 子中断不影响父 — test 第 47-53 行 ✅
+- 父已中断时创建子立即中断 — test 第 55-61 行 ✅
+- 多个子独立 — test 第 63-72 行 ✅
+- 祖孙三代级联 — test 第 83-90 行 ✅
+- 子先中断后父中断，reason 不覆盖 — test 第 92-99 行 ✅
+
+#### query.ts abort 检查点验证
+源码验证正确：
+- API 调用传递 signal: `signal: toolUseContext.abortController.signal` — 第 883 行 ✅
+- 添加 tool_use block 时检查: `!signal.aborted` — 第 1062, 1072 行 ✅
+- API streaming 结束检查: `if (signal.aborted)` — 第 1238 行 ✅
+- 工具执行后检查: `if (signal.aborted)` — 第 1708 行 ✅
+
+#### REPL cancelRequest 实现验证
+源码验证正确：
+- `abortController?.abort('user-cancel')` — REPL.tsx 第 2515, 2520 行 ✅
+- `abortController?.abort('background')` — REPL.tsx 第 2950 行 ✅
+- `abortControllerRef.current?.abort('interrupt')` — REPL.tsx 第 4909 行 ✅
+- `setAbortController(null)` 清理 — REPL.tsx 第 2527 行 ✅
+
+#### 性能考量验证
+源码验证正确：
+- WeakRef 防止内存泄漏 ✅
+- `{ once: true }` 自动清理 listener ✅
+- Fast path 跳过 listener 注册 ✅
+- 模块级函数避免闭包分配（bind 而非 closure）✅
+
+**结论**: L3 笔记结论全部正确，无需修正。
 
 #### 函数签名验证
 源码验证正确：
