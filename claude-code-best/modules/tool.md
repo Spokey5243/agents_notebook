@@ -162,7 +162,32 @@
 
 ## Review 历史
 
-（待 review）
+### 2026-04-19 - L1 Review
+
+#### 工具分类表完整性
+笔记中工具分类表遗漏了部分工具：
+- BriefTool（未分类）
+- SendUserFileTool（实验性）
+- SubscribePRTool（实验性）
+- ReviewArtifactTool（实验性）
+- PushNotificationTool（实验性）
+- TerminalCaptureTool（实验性）
+> ⚠️ **补充说明**: 笔记分类表只列出了主要工具，遗漏的是少数实验性/条件加载工具。不影响理解核心设计。
+
+#### ToolUseContext 字段数量
+笔记疑问："ToolUseContext 的完整字段列表？"
+> ⚠️ **验证结果**: 源码显示 ToolUseContext 约 50 个字段（options、abortController、messages、各种 state setter、回调等）。笔记标记为疑问是合理的，字段确实太多不适合在 L1 全部列举。
+
+#### 其余内容验证
+以下内容经源码验证全部正确：
+- Tool.call 参数签名 ✅
+- ToolResult<T> 结构 ✅
+- TOOL_DEFAULTS 默认值（isConcurrencySafe=false 等） ✅
+- aliases/toolMatchesName 机制 ✅
+- shouldDefer/alwaysLoad 延迟加载 ✅
+- MCP 兼容（isMcp, mcpInfo, inputJSONSchema） ✅
+- 进度回调（ToolCallProgress<P>） ✅
+- 结果渲染（mapToolResultToToolResultBlockParam） ✅
 
 ## 疑问与待查
 
