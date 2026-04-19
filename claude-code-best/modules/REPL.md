@@ -2,7 +2,7 @@
 
 > 项目: [[claude-code-best]]
 > 文件: src/screens/REPL.tsx (6314 行)
-> 状态: L2-complete
+> 状态: L3-complete
 
 ## L1 - 黑盒视角
 
@@ -507,7 +507,530 @@ onSubmit(input, helpers, speculationAccept?, options?) {
 
 ## L3 - 实现视角
 
-（待 L2 完成后填充）
+### 关键代码路径
+
+**REPL 组件初始化**:
+
+```text
+export function REPL({ commands: initialCommands, debug, initialTools, ... }: Props) {
+
+  // Step 1: 状态初始化（useState, useRef）
+  const [mainThreadAgentDefinition, setMainThreadAgentDefinition] = useState(initialMainThreadAgentDefinition)
+  const [screen, setScreen] = useState<Screen>('prompt')
+  const [streamMode, setStreamMode] = useState<SpinnerMode>('responding')
+  const [streamingToolUses, setStreamingToolUses] = useState<StreamingToolUse[]>([])
+  const [streamingThinking, setStreamingThinking] = useState<StreamingThinking | null>(null)
+  const [localCommands, setLocalCommands] = useState(initialCommands)
+
+  // Step 2: AppState 读取（Zustand slices）
+  const toolPermissionContext = useAppState(s => s.toolPermissionContext)
+  const verbose = useAppState(s => s.verbose)
+  const mcp = useAppState(s => s.mcp)
+  const plugins = useAppState(s => s.plugins)
+  const tasks = useAppState(s => s.tasks)
+  const setAppState = useSetAppState()
+
+  // Step 3: Ref 初始化（非渲染状态）
+  const queryGuard = React.useRef(new QueryGuard()).current  // 并发控制
+  const messagesRef = useRef<MessageType[]>(initialMessages ?? [])  // 消息引用
+  const streamModeRef = useRef(streamMode)  // 流模式引用
+  streamModeRef.current = streamMode  // 每次渲染同步
+
+  // Step 4: 工具/命令合并
+  const localTools = useMemo(() => getTools(toolPermissionContext), [toolPermissionContext])
+  const mergedTools = useMergedTools(combinedInitialTools, mcp.tools, toolPermissionContext)
+  const commands = useMemo(() => disableSlashCommands ? [] : mergedCommands, [disableSlashCommands, mergedCommands])
+
+  // Step 5: Effect hooks 初始化
+  useEffect(() => {
+    if (!isRemoteSession) void performStartupChecks(setAppState)
+  }, [setAppState, isRemoteSession])
+
+  // Step 6: 各种 hooks 调用
+  useSwarmInitialization(setAppState, initialMessages, { enabled: !isRemoteSession })
+  useIdeLogging(mcp.clients)
+  useIdeSelection(mcp.clients, setIDESelection)
+  useMcpConnectivityStatus({ mcpClients })
+  useNotifications()
+  // ... 约 30 个 hooks
+
+  // Step 7: 核心回调定义
+  const getToolUseContext = useCallback(...)
+  const onQueryEvent = useCallback(...)
+  const onQueryImpl = useCallback(...)
+  const onQuery = useCallback(...)
+  const onSubmit = useCallback(...)
+
+  // Step 8: 返回 JSX
+  return (
+    <KeybindingSetup>
+      <GlobalKeybindingHandlers>
+        <CommandKeybindingHandlers>
+          <Box>
+            {/* Messages, PromptInput, PermissionRequest, etc. */}
+          </Box>
+        </CommandKeybindingHandlers>
+      </GlobalKeybindingHandlers>
+    </KeybindingSetup>
+  )
+}
+```
+
+**QueryGuard 并发控制**:
+
+```text
+class QueryGuard {
+  private _status: 'idle' | 'dispatching' | 'running' = 'idle'
+  private _generation = 0
+  private _changed = createSignal()  // React external store signal
+
+  tryStart(): number | null {
+    if (this._status === 'running') return null  // 并发拒绝
+    this._status = 'running'
+    ++this._generation
+    this._notify()
+    return this._generation  // 返回新 generation number
+  }
+
+  end(generation: number): boolean {
+    if (this._generation !== generation) return false  // stale finally
+    if (this._status !== 'running') return false
+    this._status = 'idle'
+    this._notify()
+    return true  // 当前 generation，执行 cleanup
+  }
+
+  reserve(): boolean {
+    if (this._status !== 'idle') return false
+    this._status = 'dispatching'
+    this._notify()
+    return true
+  }
+
+  cancelReservation(): void {
+    if (this._status !== 'dispatching') return
+    this._status = 'idle'
+    this._notify()
+  }
+
+  // React external store API
+  subscribe = () => this._changed.subscribe
+  getSnapshot = () => this._status !== 'idle'
+}
+
+// 使用方式
+const queryGuard = useRef(new QueryGuard()).current
+const isQueryActive = useSyncExternalStore(queryGuard.subscribe, queryGuard.getSnapshot)
+
+// onQuery 中
+const thisGeneration = queryGuard.tryStart()
+if (thisGeneration === null) {
+  // 并发检测：enqueue message，return
+  return
+}
+
+try {
+  // ... query 执行
+} finally {
+  if (queryGuard.end(thisGeneration)) {
+    // cleanup（只有当前 generation 执行）
+  }
+}
+```
+
+**messagesRef 模式**:
+
+```text
+// 问题：setMessages 在 callback deps 中导致每次消息更新重建 callback
+// 解决：使用 ref 存储 messages，callback 读取 ref 而非 closure
+
+// Wrapper: 同步更新 ref
+const setMessages = useCallback((updater: (prev: MessageType[]) => MessageType[]) => {
+  const prev = messagesRef.current
+  const next = typeof updater === 'function' ? updater(prev) : updater
+  messagesRef.current = next  // 立即同步 ref
+  _setMessages(next)  // 触发 React re-render
+}, [])
+
+// callback 中读取 ref
+const onSubmit = useCallback((input: string, helpers: PromptInputHelpers) => {
+  // 读取 messagesRef.current（同步，无需 dep）
+  const latestMessages = messagesRef.current
+  
+  // 不需要 messages 在 deps 中
+}, [/* 没有 messages dep */])
+
+// getToolUseContext 同样模式
+const getToolUseContext = useCallback((messages, newMessages, abortController, mainLoopModel) => {
+  // messages 参数来自 caller，不是 closure
+  return { messages, ... }
+}, [/* 没有 messages dep */])
+```
+
+**streamModeRef 模式**:
+
+```text
+// 问题：streamMode 在流式响应中频繁切换（~10x per turn）
+// 如果 streamMode 在 onSubmit deps 中，会导致 onSubmit 重建
+
+const [streamMode, setStreamMode] = useState<SpinnerMode>('responding')
+const streamModeRef = useRef(streamMode)
+streamModeRef.current = streamMode  // 每次渲染同步
+
+// onSubmit 不依赖 streamMode，而是读取 ref
+const onSubmit = useCallback((input: string, helpers: PromptInputHelpers) => {
+  // 内部读取 streamModeRef.current（用于 debug/telemetry）
+  const currentMode = streamModeRef.current
+  
+  // handleSubmit 内部也用 ref
+}, [])  // 空 deps，永不重建
+
+// setStreamMode 可安全调用，不触发 onSubmit 重建
+```
+
+**onQueryImpl 实现**:
+
+```text
+async function onQueryImpl(messagesIncludingNewMessages, newMessages, abortController, shouldQuery, additionalAllowedTools, mainLoopModelParam, effort) {
+
+  // Step 1: IDE 准备
+  if (shouldQuery) {
+    const freshClients = mergeClients(initialMcpClients, store.getState().mcp.clients)
+    void diagnosticTracker.handleQueryStart(freshClients)
+    const ideClient = getConnectedIdeClient(freshClients)
+    if (ideClient) void closeOpenDiffs(ideClient)
+  }
+
+  // Step 2: session title 生成（首次用户消息）
+  if (!titleDisabled && !sessionTitle && !haikuTitleAttemptedRef.current) {
+    const firstUserMessage = newMessages.find(m => m.type === 'user' && !m.isMeta)
+    const text = getContentText(firstUserMessage?.message?.content)
+    if (text && !isSynthetic(text)) {
+      haikuTitleAttemptedRef.current = true
+      void generateSessionTitle(text, signal).then(title => {
+        if (title) setHaikuTitle(title)
+      })
+    }
+  }
+
+  // Step 3: 更新 allowedTools（skill-scoped）
+  store.setState(prev => ({
+    ...prev,
+    toolPermissionContext: {
+      ...prev.toolPermissionContext,
+      alwaysAllowRules: {
+        ...prev.toolPermissionContext.alwaysAllowRules,
+        command: additionalAllowedTools,
+      }
+    }
+  }))
+
+  // Step 4: 构建 systemPrompt
+  const systemPrompt = await buildEffectiveSystemPrompt({
+    customSystemPrompt,
+    appendSystemPrompt,
+    mcpClients: freshClients,
+    tools: computeTools(),
+    thinkingConfig,
+    ...options
+  })
+
+  // Step 5: 构建 userContext 和 systemContext
+  const userContext = await getUserContext(getCwd(), { customSystemPrompt, appendSystemPrompt, ... })
+  const systemContext = await getSystemContext(getCwd(), { mcpClients: freshClients, ... })
+
+  // Step 6: 构建 toolUseContext
+  const toolUseContext = getToolUseContext(messagesIncludingNewMessages, newMessages, abortController, mainLoopModelParam)
+
+  // Step 7: 执行 query 循环
+  queryCheckpoint('query_start')
+  for await (const event of query({
+    messages: messagesIncludingNewMessages,
+    systemPrompt,
+    userContext,
+    systemContext,
+    canUseTool,
+    toolUseContext,
+    querySource: getQuerySourceForREPL(),
+  })) {
+    onQueryEvent(event)  // 处理流式事件
+  }
+
+  // Step 8: API metrics 记录（ant-only）
+  if (USER_TYPE === 'ant' && apiMetricsRef.current.length > 0) {
+    const entries = apiMetricsRef.current
+    const ttfts = entries.map(e => e.ttftMs)
+    const otpsValues = entries.map(e => computeOTPS(e))
+    setMessages(prev => [
+      ...prev,
+      createApiMetricsMessage({
+        ttftMs: median(ttfts),
+        otps: median(otpsValues),
+        hookDurationMs: getTurnHookDurationMs(),
+        toolDurationMs: getTurnToolDurationMs(),
+        turnDurationMs: Date.now() - loadingStartTimeRef.current,
+      })
+    ])
+  }
+
+  // Step 9: 清理
+  resetLoadingState()
+  logQueryProfileReport()
+  await onTurnComplete?.(messagesRef.current)
+}
+```
+
+**immediate 命令执行**:
+
+```text
+onSubmit(input, helpers, speculationAccept?, options?) {
+  
+  // 检测命令
+  if (input.trim().startsWith('/')) {
+    const trimmedInput = expandPastedTextRefs(input, pastedContents).trim()
+    const commandName = extractCommandName(trimmedInput)
+    const matchingCommand = commands.find(cmd => isCommandEnabled(cmd) && cmd.name === commandName)
+
+    // 判断 immediate
+    const shouldTreatAsImmediate = queryGuard.isActive && (matchingCommand?.immediate || options?.fromKeybinding)
+
+    if (matchingCommand && shouldTreatAsImmediate && matchingCommand.type === 'local-jsx') {
+      // 立即执行（即使 query 进行中）
+      const executeImmediateCommand = async () => {
+        const onDone = (result, doneOptions) => {
+          // 显示 notification
+          addNotification({ key: `immediate-${matchingCommand.name}`, text: result, priority: 'immediate' })
+          // 恢复 stashed prompt
+          if (stashedPrompt !== undefined) {
+            setInputValue(stashedPrompt.text)
+            helpers.setCursorOffset(stashedPrompt.cursorOffset)
+          }
+        }
+
+        const context = getToolUseContext(messagesRef.current, [], createAbortController(), mainLoopModel)
+        const mod = await matchingCommand.load()
+        const jsx = await mod.call(onDone, context, commandArgs)
+
+        if (jsx && !doneWasCalled) {
+          setToolJSX({ jsx, shouldHidePromptInput: false, isLocalJSXCommand: true })
+        }
+      }
+      
+      void executeImmediateCommand()
+      return  // 不加入 history，不入队
+    }
+  }
+
+  // 非 immediate：走标准提交流程
+  handlePromptSubmit(input, helpers, ...)
+}
+```
+
+**idle-return 检查**:
+
+```text
+onSubmit(input, helpers, ...) {
+  
+  // 检查 willow mode
+  const willowMode = getFeatureValue_CACHED_MAY_BE_STALE('tengu_willow_mode', 'off')
+  const idleThresholdMin = Number(process.env.CLAUDE_CODE_IDLE_THRESHOLD_MINUTES ?? 75)
+  const tokenThreshold = Number(process.env.CLAUDE_CODE_IDLE_TOKEN_THRESHOLD ?? 100_000)
+
+  if (
+    willowMode !== 'off' &&
+    !getGlobalConfig().idleReturnDismissed &&
+    !skipIdleCheckRef.current &&
+    !speculationAccept &&
+    !input.trim().startsWith('/') &&
+    meetsIdleThreshold
+  ) {
+    if (willowMode === 'dialog') {
+      // 显示 IdleReturnDialog（blocking）
+      setIdleReturnDialog({ threshold: idleThresholdMin, tokens: tokenThreshold })
+      return
+    } else if (willowMode === 'hint') {
+      // 显示 notification hint
+      addNotification({ key: 'idle-return-hint', text: '...', priority: 'normal' })
+      idleHintShownRef.current = 'hint'
+    }
+  }
+
+  // 用户可跳过检查
+  skipIdleCheckRef.current = true  // 一次跳过后不再检查
+}
+```
+
+### 边界条件
+
+**1. Concurrent Query 检测**
+
+当用户快速提交多个 prompt：
+- `tryStart()` 返回 null → 检测并发
+- 将 user message enqueue 到队列
+- 等待当前 query 完成，队列处理器自动执行
+
+设计原因：防止多个 API call 同时运行，保证顺序。
+
+**2. Stale Finally Block**
+
+用户取消 query 后立即提交新 query：
+- 第一个 query 的 `finally` block 执行
+- `end(generation)` 检查 generation number
+- 如果 generation mismatch → 返回 false，跳过 cleanup
+- 第二个 query 的 cleanup 执行
+
+设计原因：防止 stale finally 阻塞新 query。
+
+**3. Ephemeral Progress 替换**
+
+Sleep/Bash 工具每秒 emit progress：
+- 如果 append → messages 数组爆炸（13k+）
+- 替换逻辑：检查 parentToolUseID 和 type
+- 如果匹配 → 替换最后一条而非 append
+- transcript 大小稳定
+
+设计原因：O(n) 渲染性能，120MB transcript 问题。
+
+**4. Compact Boundary 处理**
+
+两种模式：
+- **普通模式**：`setMessages(() => [newMessage])` 清空列表
+- **全屏模式**：保留 pre-compact 消息作为 scrollback
+
+`conversationId` bump 强制 row remount，防止 stale memoized rows。
+
+**5. API Error 阻断 Proactive**
+
+API 错误（auth, rate limit）时：
+- `setContextBlocked(true)` 阻断 proactive ticks
+- 防止 tick → error → tick 无限循环
+- compact 成功或正常响应后恢复
+
+**6. Skill-scoped AllowedTools**
+
+slash command 传入 `additionalAllowedTools`：
+- 写入 `toolPermissionContext.alwaysAllowRules.command`
+- 下一 turn 自动清空（传入 []）
+
+设计原因：skill frontmatter 限制工具，fork agent 也需继承。
+
+**7. messagesRef 同步**
+
+`setMessages` wrapper 确保 ref 同步：
+- `messagesRef.current = next` 先执行
+- `_setMessages(next)` 后执行
+- callback 读取 ref 获得最新值
+
+设计原因：避免 closure stale，React scheduler 延迟。
+
+**8. Session Title 生成时机**
+
+首次用户消息生成 title：
+- 排除 synthetic 消息（command output, skill expansion）
+- `haikuTitleAttemptedRef` 防止重复尝试
+- 失败后重置 ref，允许下次尝试
+
+**9. IDE Diff 关闭**
+
+新 turn 开始时：
+- `closeOpenDiffs(ideClient)` 关闭 VS Code diff panel
+- 防止 stale diff 残留
+
+**10. Remote Mode Pipe Routing**
+
+`routeToSelectedPipes(input)` 检测：
+- 如果路由成功 → 直接发送，不入队列
+- 显示 user message，清空输入
+- return early
+
+### 性能考量
+
+**1. messagesRef 模式**
+
+测量：避免 callback 重建，减少 20-56ms GC pause
+
+原理：
+- setMessages 触发 re-render → callback deps 检查
+- messages 在 deps 中 → callback 重建
+- callback 重建 → 所有子组件 props 变化 → cascade re-render
+- messagesRef 读取 ref → deps 不变 → callback stable
+
+**2. streamModeRef 模式**
+
+测量：streamMode ~10x/turn 切换，避免 10x callback 重建
+
+原理：
+- streamMode 在 deps 中 → 每次 flip 重建 onSubmit
+- onSubmit 重建 → PromptInput props 变化
+- ref 读取 → deps 空 → onSubmit stable
+
+**3. computeTools 动态计算**
+
+MCP server 异步连接：
+- render 时 closure 捕获的 tools 可能 stale
+- `computeTools()` 从 `store.getState()` 读取最新
+- `getToolUseContext` 调用时动态计算
+
+设计原因：MCP server 可在 render 后连接，tools 需要最新。
+
+**4. Virtual Scroll**
+
+`VirtualMessageList` 组件：
+- 只渲染可视区域 rows
+- O(visible) 而非 O(total) 渲染
+- 支持数千条消息无卡顿
+
+环境变量：`CLAUDE_CODE_DISABLE_VIRTUAL_SCROLL=1` 禁用
+
+**5. Ephemeral Progress 替换**
+
+测量：13k+ → 稳定数量
+
+原理：
+- append → messages.length 无限增长
+- normalizeMessages, applyGrouping O(n) per render
+- 替换 → length 稳定 → O(1) per render
+
+**6. useState vs useAppState**
+
+分层设计：
+- **AppState**（Zustand）：全局共享状态，跨组件
+- **useState**：组件私有状态，render 依赖
+- **useRef**：非渲染状态，callback 读取
+
+减少 AppState 订阅，优化 re-render 范围。
+
+**7. useCallback deps 优化**
+
+关键 callbacks deps 空或最小：
+- `onSubmit` deps: []（使用 ref）
+- `getToolUseContext` deps: 无 messages
+- `onQueryEvent` deps: 只 set 函数
+
+减少 cascade re-render。
+
+**8. useDeferredValue**
+
+`useDeferredHookMessages`：
+- SessionStart hooks 消息延迟注入
+- 不阻塞首屏渲染
+- 用户立即看到 UI
+
+**9. useMemo 工具缓存**
+
+`localTools` memo：
+- `getTools()` 计算开销大
+- `toolPermissionContext` 变化才重新计算
+- proactive/isBriefOnly 作为 dep
+
+**10. queryCheckpoint**
+
+query profiling：
+- `queryCheckpoint('query_start')`, `queryCheckpoint('query_end')`
+- 记录各阶段耗时
+- `logQueryProfileReport()` 输出分析
+
+性能分析工具，不影响生产性能。
 
 ## Review 历史
 
