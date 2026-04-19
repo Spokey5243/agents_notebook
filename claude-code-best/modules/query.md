@@ -2,7 +2,7 @@
 
 > 项目: [[claude-code-best]]
 > 文件: src/query.ts
-> 状态: L2-complete
+> 状态: L3-complete
 
 ## L1 - 黑盒视角
 
@@ -209,25 +209,169 @@ const MAX_OUTPUT_TOKENS_RECOVERY_LIMIT = 3  // max_output_tokens 恢复最大尝
 
 ## L3 - 实现视角
 
-（待 L2 完成后填充）
-
 ### 关键代码路径
 
-```
-query() {
-  while(true) {
+queryLoop 的 while(true) 循环伪代码：
+
+```text
+queryLoop(params, consumedCommandUuids) {
+  // 初始化 immutable params（只读）
+  const { systemPrompt, userContext, systemContext, ... } = params
+  
+  // 初始化 mutable state
+  let state: State = {
+    messages: params.messages,
+    toolUseContext: params.toolUseContext,
+    turnCount: 1,
+    transition: undefined,
     ...
+  }
+  
+  // 预取资源（using 语法，自动清理）
+  using pendingMemoryPrefetch = startRelevantMemoryPrefetch(...)
+  
+  while (true) {
+    // 1. 解构 state
+    let { toolUseContext } = state
+    const { messages, turnCount, ... } = state
+    
+    // 2. 预取阶段
+    const pendingSkillPrefetch = skillPrefetch?.startSkillDiscoveryPrefetch(...)
+    
+    // 3. yield 请求开始事件
+    yield { type: 'stream_request_start' }
+    
+    // 4. 上下文管理（压缩、折叠）
+    messagesForQuery = getMessagesAfterCompactBoundary(messages)
+    messagesForQuery = await applyToolResultBudget(...)
+    messagesForQuery = await deps.microcompact(...)
+    messagesForQuery = await deps.autocompact(...)  // 可能触发 continue
+    
+    // 5. API 调用（流式）
+    for await (const message of deps.callModel({...})) {
+      yield message  // 流式返回给调用者
+      assistantMessages.push(message)
+      // 收集 tool_use blocks
+    }
+    
+    // 6. 处理中断
+    if (abortController.signal.aborted) {
+      yield createUserInterruptionMessage(...)
+      return { reason: 'aborted_streaming' }
+    }
+    
+    // 7. 处理错误恢复（prompt-too-long、max_output_tokens）
+    if (isWithheld413 || isWithheldMaxOutputTokens) {
+      // 尝试 collapse drain → continue
+      // 尝试 reactive compact → continue
+      // 否则 return { reason: 'prompt_too_long' }
+    }
+    
+    // 8. 处理 stop hooks
+    const stopHookResult = yield* handleStopHooks(...)
+    if (stopHookResult.blockingErrors.length > 0) {
+      state = { messages: [...blockingErrors], stopHookActive: true, ... }
+      continue  // stop_hook_blocking 重试
+    }
+    
+    // 9. 工具执行（如果有 tool_use）
+    if (needsFollowUp) {
+      for await (const update of runTools(...)) {
+        yield update.message
+        toolResults.push(...)
+      }
+    }
+    
+    // 10. 检查 maxTurns
+    if (maxTurns && nextTurnCount > maxTurns) {
+      return { reason: 'max_turns', turnCount }
+    }
+    
+    // 11. 下一轮循环
+    state = {
+      messages: [...messagesForQuery, ...assistantMessages, ...toolResults],
+      turnCount: nextTurnCount,
+      transition: { reason: 'next_turn' },
+      ...
+    }
+    // 自动继续循环（while true 底部）
   }
 }
 ```
 
+### Continue 点（循环重试）
+
+7 个 continue 点，每个代表一种恢复路径：
+
+| 行号 | transition.reason | 触发条件 | 说明 |
+|------|-------------------|----------|------|
+| 1173 | (fallback) | FallbackTriggeredError | 切换备用模型后重试 |
+| 1338 | `collapse_drain_retry` | prompt-too-long + collapse drain 成功 | 上下文折叠恢复后重试 |
+| 1388 | `reactive_compact_retry` | prompt-too-long + reactive compact 成功 | 响应式压缩后重试 |
+| 1443 | `max_output_tokens_escalate` | max_output_tokens + 首次触发 | 升级输出 token 限制后重试 |
+| 1474 | `max_output_tokens_recovery` | max_output_tokens + 恢复计数 < 3 | 添加恢复消息后重试 |
+| 1528 | `stop_hook_blocking` | stop hook 返回 blockingErrors | stop hook 阻塞后重试 |
+| 1563 | `token_budget_continuation` | token 预算达到阈值 | token 预算继续 |
+
+### Return 点（退出循环）
+
+| reason | 触发条件 | 附带信息 |
+|--------|----------|----------|
+| `blocking_limit` | 未启用 auto-compact + 达到阻塞限制 | 无 |
+| `image_error` | 图片大小/尺寸错误 | 无 |
+| `model_error` | API 调用抛出异常 | `error` 对象 |
+| `aborted_streaming` | 流式输出中断 | 无 |
+| `aborted_tools` | 工具执行中断 | 无 |
+| `prompt_too_long` | prompt 过长 + 恢复失败 | 无 |
+| `completed` | 正常完成（无 tool_use 或 stop hook 通过） | 无 |
+| `stop_hook_prevented` | stop hook 阻止继续 | 无 |
+| `hook_stopped` | hook 停止 | 无 |
+| `max_turns` | 达到最大轮次 | `turnCount` |
+
 ### 边界条件
 
-- {错误处理}
+**1. 错误恢复优先级**
+
+```
+prompt-too-long 恢复链:
+  collapse drain → reactive compact → prompt-too-long return
+
+max_output_tokens 恢复链:
+  escalate (64k) → recovery (最多 3 次) → return
+```
+
+**2. 防止无限循环**
+
+- `hasAttemptedReactiveCompact`: 防止 reactive compact 重试后再次触发
+- `maxOutputTokensRecoveryCount < 3`: 限制 max_output_tokens 恢复次数
+- `stopHookActive`: 标记 stop hook 阻塞状态，防止重复触发
+
+**3. 子 agent 特殊处理**
+
+- `querySource.startsWith('agent:')`: 子 agent 不报告命令生命周期
+- `toolUseContext.agentId`: 子 agent 使用独立的 trace
 
 ### 性能考量
 
-- {缓存/异步}
+**1. 流式处理**
+
+- `yield` 实时返回事件，不阻塞主循环
+- 调用者通过 `for await` 消费，可实时显示 UI
+
+**2. 预取优化**
+
+- `pendingMemoryPrefetch`: 预取记忆，在 API 调用期间并行执行
+- `pendingSkillPrefetch`: 预取 skill 发现，与模型流式输出并行
+
+**3. 缓存策略**
+
+- `microcompact`: 微压缩使用 prompt cache 编辑（Anthropic 专属）
+- `skipCacheWrite`: 可选跳过缓存写入
+
+**4. 异步设计**
+
+- `using` 语法自动清理预取资源
+- `StreamingToolExecutor`: 工具执行与模型流式输出并行（实验性）
 
 ## Review 历史
 
