@@ -172,7 +172,170 @@ MCP 工具规则匹配：
 
 ## L2 - 接口视角
 
-（待 L1 review 完成后填充）
+### 核心函数
+
+| 函数名 | 作用 | 关键参数 | 返回类型 |
+|--------|------|----------|----------|
+| `hasPermissionsToUseTool()` | 权限检查入口 | `tool`, `input`, `context`, `assistantMessage`, `toolUseID` | `Promise<PermissionDecision>` |
+| `hasPermissionsToUseToolInner()` | 内部检查逻辑 | `tool`, `input`, `context` | `Promise<PermissionDecision>` |
+| `toolAlwaysAllowedRule()` | 检查工具 allow 规则 | `context`, `tool` | `PermissionRule | null` |
+| `getDenyRuleForTool()` | 检查工具 deny 规则 | `context`, `tool` | `PermissionRule | null` |
+| `getAskRuleForTool()` | 检查工具 ask 规则 | `context`, `tool` | `PermissionRule | null` |
+| `getAllowRules()` | 获取所有 allow 规则 | `context` | `PermissionRule[]` |
+| `getDenyRules()` | 获取所有 deny 规则 | `context` | `PermissionRule[]` |
+| `getAskRules()` | 获取所有 ask 规则 | `context` | `PermissionRule[]` |
+| `toolMatchesRule()` | 工具匹配规则 | `tool`, `rule` | `boolean` |
+| `createPermissionRequestMessage()` | 创建请求消息 | `toolName`, `decisionReason` | `string` |
+| `permissionModeTitle()` | 获取模式标题 | `mode` | `string` |
+| `isDefaultMode()` | 判断默认模式 | `mode` | `boolean` |
+
+### 核心类型
+
+```typescript
+// PermissionMode - 权限模式
+export type PermissionMode = 
+  | 'default' 
+  | 'acceptEdits' 
+  | 'bypassPermissions' 
+  | 'dontAsk' 
+  | 'plan' 
+  | 'auto'  // 实验性
+
+// PermissionBehavior - 权限行为
+export type PermissionBehavior = 'allow' | 'deny' | 'ask'
+
+// PermissionDecision - 权限决策（三种行为）
+export type PermissionDecision<Input = { [key: string]: unknown }> =
+  | PermissionAllowDecision<Input>
+  | PermissionAskDecision<Input>
+  | PermissionDenyDecision
+
+// PermissionAllowDecision
+export type PermissionAllowDecision<Input> = {
+  behavior: 'allow'
+  updatedInput?: Input
+  userModified?: boolean
+  decisionReason?: PermissionDecisionReason
+  toolUseID?: string
+  acceptFeedback?: string
+  contentBlocks?: ContentBlockParam[]
+}
+
+// PermissionAskDecision
+export type PermissionAskDecision<Input> = {
+  behavior: 'ask'
+  message: string
+  updatedInput?: Input
+  decisionReason?: PermissionDecisionReason
+  suggestions?: PermissionUpdate[]
+  blockedPath?: string
+  metadata?: PermissionMetadata
+  pendingClassifierCheck?: PendingClassifierCheck
+  contentBlocks?: ContentBlockParam[]
+}
+
+// PermissionDenyDecision
+export type PermissionDenyDecision = {
+  behavior: 'deny'
+  message: string
+  decisionReason: PermissionDecisionReason
+  toolUseID?: string
+}
+
+// PermissionRule - 权限规则
+export type PermissionRule = {
+  source: PermissionRuleSource
+  ruleBehavior: PermissionBehavior
+  ruleValue: PermissionRuleValue
+}
+
+// PermissionRuleValue - 规则值
+export type PermissionRuleValue = {
+  toolName: string
+  ruleContent?: string  // 如 "git *" for Bash(git *)
+}
+
+// PermissionRuleSource - 规则来源
+export type PermissionRuleSource =
+  | 'userSettings'
+  | 'projectSettings'
+  | 'localSettings'
+  | 'flagSettings'
+  | 'policySettings'
+  | 'cliArg'
+  | 'command'
+  | 'session'
+
+// ToolPermissionContext - 权限上下文
+export type ToolPermissionContext = {
+  readonly mode: PermissionMode
+  readonly additionalWorkingDirectories: ReadonlyMap<string, AdditionalWorkingDirectory>
+  readonly alwaysAllowRules: ToolPermissionRulesBySource
+  readonly alwaysDenyRules: ToolPermissionRulesBySource
+  readonly alwaysAskRules: ToolPermissionRulesBySource
+  readonly isBypassPermissionsModeAvailable: boolean
+  readonly strippedDangerousRules?: ToolPermissionRulesBySource
+  readonly shouldAvoidPermissionPrompts?: boolean
+  readonly awaitAutomatedChecksBeforeDialog?: boolean
+  readonly prePlanMode?: PermissionMode
+}
+
+// PermissionDecisionReason - 决策原因
+export type PermissionDecisionReason =
+  | { type: 'rule'; rule: PermissionRule }
+  | { type: 'mode'; mode: PermissionMode }
+  | { type: 'subcommandResults'; reasons: Map<string, PermissionResult> }
+  | { type: 'permissionPromptTool'; permissionPromptToolName: string; toolResult: unknown }
+  | { type: 'hook'; hookName: string; hookSource?: string; reason?: string }
+  | { type: 'asyncAgent'; reason: string }
+  | { type: 'sandboxOverride'; reason: 'excludedCommand' | 'dangerouslyDisableSandbox' }
+  | { type: 'classifier'; classifier: string; reason: string }
+  | { type: 'workingDir'; reason: string }
+  | { type: 'safetyCheck'; reason: string; classifierApprovable: boolean }
+  | { type: 'other'; reason: string }
+```
+
+### 权限检查流程
+
+```text
+hasPermissionsToUseToolInner() 内部流程：
+
+Step 1: 前置检查（bypass 模式也执行）
+  1a. 工具级 deny 规则 → 直接 deny
+  1b. 工具级 ask 规则 → 返回 ask（除非 sandbox 自动允许）
+  1c. tool.checkPermissions() → 工具特定权限逻辑
+  1d. 工具返回 deny → 直接 deny
+  1e. requiresUserInteraction() → 强制 ask
+  1f. 内容级 ask 规则 → 强制 ask
+  1g. safetyCheck → 强制 ask（bypass 免疫）
+
+Step 2: 模式处理
+  2a. bypassPermissions 模式 → allow
+  2b. 工具级 allow 规则 → allow
+
+Step 3: 结果转换
+  passthrough → ask
+  返回最终 decision
+```
+
+### 规则匹配逻辑
+
+```text
+toolMatchesRule() 匹配规则：
+
+1. 无 ruleContent → 工具级匹配
+   - rule.toolName === tool.nameForRuleMatch
+   
+2. MCP server 级匹配
+   - ruleInfo.serverName === toolInfo.serverName
+   - ruleInfo.toolName === undefined 或 '*'
+   
+3. 规则示例：
+   - "Bash" → 匹配整个 BashTool
+   - "Bash(git status)" → 匹配特定命令
+   - "mcp__server1" → 匹配 server1 的所有工具
+   - "mcp__server1__*" → 同上（通配符）
+```
 
 ## L3 - 实现视角
 
