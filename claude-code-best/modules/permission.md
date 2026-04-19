@@ -174,20 +174,20 @@ MCP 工具规则匹配：
 
 ### 核心函数
 
-| 函数名 | 作用 | 关键参数 | 返回类型 |
-|--------|------|----------|----------|
-| `hasPermissionsToUseTool()` | 权限检查入口 | `tool`, `input`, `context`, `assistantMessage`, `toolUseID` | `Promise<PermissionDecision>` |
-| `hasPermissionsToUseToolInner()` | 内部检查逻辑 | `tool`, `input`, `context` | `Promise<PermissionDecision>` |
-| `toolAlwaysAllowedRule()` | 检查工具 allow 规则 | `context`, `tool` | `PermissionRule | null` |
-| `getDenyRuleForTool()` | 检查工具 deny 规则 | `context`, `tool` | `PermissionRule | null` |
-| `getAskRuleForTool()` | 检查工具 ask 规则 | `context`, `tool` | `PermissionRule | null` |
-| `getAllowRules()` | 获取所有 allow 规则 | `context` | `PermissionRule[]` |
-| `getDenyRules()` | 获取所有 deny 规则 | `context` | `PermissionRule[]` |
-| `getAskRules()` | 获取所有 ask 规则 | `context` | `PermissionRule[]` |
-| `toolMatchesRule()` | 工具匹配规则 | `tool`, `rule` | `boolean` |
-| `createPermissionRequestMessage()` | 创建请求消息 | `toolName`, `decisionReason` | `string` |
-| `permissionModeTitle()` | 获取模式标题 | `mode` | `string` |
-| `isDefaultMode()` | 判断默认模式 | `mode` | `boolean` |
+| 函数名                                | 作用            | 关键参数                                                        | 返回类型                          |       |
+| ---------------------------------- | ------------- | ----------------------------------------------------------- | ----------------------------- | ----- |
+| `hasPermissionsToUseTool()`        | 权限检查入口        | `tool`, `input`, `context`, `assistantMessage`, `toolUseID` | `Promise<PermissionDecision>` |       |
+| `hasPermissionsToUseToolInner()`   | 内部检查逻辑        | `tool`, `input`, `context`                                  | `Promise<PermissionDecision>` |       |
+| `toolAlwaysAllowedRule()`          | 检查工具 allow 规则 | `context`, `tool`                                           | `PermissionRule               | null` |
+| `getDenyRuleForTool()`             | 检查工具 deny 规则  | `context`, `tool`                                           | `PermissionRule               | null` |
+| `getAskRuleForTool()`              | 检查工具 ask 规则   | `context`, `tool`                                           | `PermissionRule               | null` |
+| `getAllowRules()`                  | 获取所有 allow 规则 | `context`                                                   | `PermissionRule[]`            |       |
+| `getDenyRules()`                   | 获取所有 deny 规则  | `context`                                                   | `PermissionRule[]`            |       |
+| `getAskRules()`                    | 获取所有 ask 规则   | `context`                                                   | `PermissionRule[]`            |       |
+| `toolMatchesRule()`                | 工具匹配规则        | `tool`, `rule`                                              | `boolean`                     |       |
+| `createPermissionRequestMessage()` | 创建请求消息        | `toolName`, `decisionReason`                                | `string`                      |       |
+| `permissionModeTitle()`            | 获取模式标题        | `mode`                                                      | `string`                      |       |
+| `isDefaultMode()`                  | 判断默认模式        | `mode`                                                      | `boolean`                     |       |
 
 ### 核心类型
 
@@ -605,6 +605,28 @@ Bash 工具在 sandbox 启用时可跳过 ask 规则：
 - `ToolPermissionContext` 字段列表正确 ✅
 - `PermissionRuleValue` 结构正确 ✅
 - deny 优先原则 ✅
+
+### 2026-04-19 - L3 Review
+
+#### DENIAL_LIMITS 常量验证
+源码定义正确：
+- `maxConsecutive: 3` ✅
+- `maxTotal: 20` ✅
+
+#### 工具名别名映射验证
+`LEGACY_TOOL_NAME_ALIASES` 正确：
+- Task → Agent ✅
+- KillShell → TaskStop ✅
+- AgentOutputTool/BashOutputTool → TaskOutput ✅
+
+#### 规则转义机制验证
+转义/反转义逻辑正确：
+- `\(` / `\)` 转义括号 ✅
+- 先转义反斜杠，再转义括号（顺序重要）✅
+
+#### bypass 免疫检查验证
+Step 1a-1g 即使在 bypass 模式也执行：
+- deny 规则、内容级 ask 规则、safetyCheck 都不可绕过 ✅
 
 ## 疑问与待查
 
