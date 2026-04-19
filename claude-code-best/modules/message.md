@@ -2,7 +2,7 @@
 
 > 项目: [[claude-code-best]]
 > 文件: src/types/message.ts, src/utils/messages.ts
-> 状态: L2-complete
+> 状态: L3-complete
 
 ## L1 - 黑盒视角
 
@@ -259,7 +259,226 @@ export function getLastAssistantMessage(
 
 ## L3 - 实现视角
 
-（待 L2 完成后填充）
+### 关键代码路径
+
+**createUserMessage 实现**:
+
+```text
+createUserMessage({ content, isMeta, toolUseResult, ... }) {
+  const m: UserMessage = {
+    type: 'user',
+    message: {
+      role: 'user',
+      content: content || NO_CONTENT_MESSAGE  // 确保不发送空消息
+    },
+    isMeta,
+    isVisibleInTranscriptOnly,
+    isVirtual,
+    isCompactSummary,
+    summarizeMetadata,
+    uuid: uuid || randomUUID(),               // 自动生成或使用指定
+    timestamp: timestamp || new Date().toISOString(),
+    toolUseResult,
+    mcpMeta,
+    imagePasteIds,
+    sourceToolAssistantUUID,
+    permissionMode,
+    origin,
+  }
+  return m
+}
+```
+
+**createAssistantMessage 实现**:
+
+```text
+createAssistantMessage({ content, usage, isVirtual }) {
+  return baseCreateAssistantMessage({
+    content: typeof content === 'string'
+      ? [{ type: 'text', text: content === '' ? NO_CONTENT_MESSAGE : content }]
+      : content,
+    usage,
+    isVirtual,
+  })
+}
+
+baseCreateAssistantMessage({ content, usage, ... }) {
+  return {
+    type: 'assistant',
+    message: {
+      id: randomUUID(),
+      role: 'assistant',
+      stop_reason: 'stop_sequence',
+      content: content as ContentBlock[],
+      usage,
+    },
+    uuid: randomUUID(),
+    timestamp: new Date().toISOString(),
+    ...
+  }
+}
+```
+
+**normalizeMessages 实现**:
+
+```text
+normalizeMessages(messages: Message[]): NormalizedMessage[] {
+  let isNewChain = false
+  
+  return messages.flatMap(message => {
+    switch (message.type) {
+      case 'assistant': {
+        // 将多 block 的 assistant 消息拆分成单 block 消息
+        const content = Array.isArray(message.message.content) 
+          ? message.message.content 
+          : []
+        isNewChain = isNewChain || content.length > 1
+        
+        return content.map((block, index) => ({
+          type: 'assistant',
+          message: { ...message.message, content: [block] },
+          uuid: isNewChain ? deriveUUID(message.uuid, index) : message.uuid,
+          ...
+        }))
+      }
+      
+      case 'user': {
+        // 将 string content 转换为 [{ type: 'text', text: ... }]
+        if (typeof message.message.content === 'string') {
+          return [{
+            ...message,
+            message: {
+              ...message.message,
+              content: [{ type: 'text', text: message.message.content }]
+            },
+            uuid: isNewChain ? deriveUUID(message.uuid, 0) : message.uuid,
+          }]
+        }
+        
+        // 处理多 block user 消息（包括图片）
+        isNewChain = isNewChain || (message.message.content?.length ?? 0) > 1
+        let imageIndex = 0
+        
+        return (message.message.content ?? []).map((block, index) => {
+          const isImage = block.type === 'image'
+          const imageId = isImage && message.imagePasteIds
+            ? message.imagePasteIds[imageIndex]
+            : undefined
+          if (isImage) imageIndex++
+          
+          return {
+            ...createUserMessage({ content: [block], ... }),
+            uuid: isNewChain ? deriveUUID(message.uuid, index) : message.uuid,
+            imagePasteIds: imageId !== undefined ? [imageId] : undefined,
+          }
+        })
+      }
+      
+      case 'attachment':  return [message]  // 保持原样
+      case 'progress':    return [message]
+      case 'system':      return [message]
+    }
+  })
+}
+```
+
+**deriveUUID 实现**（确定性 UUID 派生）:
+
+```text
+deriveUUID(parentUUID: UUID, index: number): UUID {
+  const hex = index.toString(16).padStart(12, '0')
+  return `${parentUUID.slice(0, 24)}${hex}` as UUID
+}
+
+// 示例：
+// parentUUID = 'abc-123-def-456'
+// index = 0 → 'abc-123-def-456000000000000'
+// index = 1 → 'abc-123-def-456000000000001'
+```
+
+**reorderMessagesInUI 实现**（UI 显示重排序）:
+
+```text
+reorderMessagesInUI(messages, syntheticStreamingToolUseMessages) {
+  // 1. 按 tool use ID 分组
+  const toolUseGroups = new Map<string, {
+    toolUse: ToolUseRequestMessage | null
+    preHooks: AttachmentMessage[]
+    toolResult: NormalizedUserMessage | null
+    postHooks: AttachmentMessage[]
+  }>()
+  
+  // 2. 遍历消息，填充分组
+  for (const message of messages) {
+    if (isToolUseRequestMessage(message)) {
+      const toolUseID = message.message.content[0]?.id
+      toolUseGroups.get(toolUseID)!.toolUse = message
+    }
+    
+    if (isHookAttachmentMessage(message) && message.attachment.hookEvent === 'PreToolUse') {
+      toolUseGroups.get(toolUseID)!.preHooks.push(message)
+    }
+    
+    // ... 类似处理 toolResult 和 postHooks
+  }
+  
+  // 3. 按顺序构建结果：preHooks → toolUse → toolResult → postHooks
+  return reorderedMessages
+}
+```
+
+### 边界条件
+
+**1. 空内容处理**:
+- `content === ''` → 替换为 `NO_CONTENT_MESSAGE`
+- `content === undefined` → 替换为 `NO_CONTENT_MESSAGE`
+
+**2. UUID 派生规则**:
+- 单 block 消息 → 保持原 UUID
+- 多 block 消息（index > 0）→ 派生新 UUID
+- `isNewChain` 标记：一旦遇到多 block，后续所有消息都需要派生
+
+**3. 图片消息处理**:
+- UserMessage 中的 `imagePasteIds` 数组对应图片 block
+- 规范化时按顺序提取 `imagePasteIds[index]`
+
+**4. 合成消息判断**:
+- `isSyntheticMessage()` 检查 content 是否匹配特定常量（`INTERRUPT_MESSAGE`, `CANCEL_MESSAGE` 等）
+- 合成消息不发给 API，只用于 UI 显示
+
+**5. Hook 附件消息**:
+- `AttachmentMessage` 的 `attachment.hookEvent` 区分 `PreToolUse` 和 `PostToolUse`
+- UI 重排序时按 hook 类型分组显示
+
+**6. 工具结果匹配**:
+- `isToolUseResultMessage()` 通过 `tool_result` block 或 `toolUseResult` 字段判断
+- `sourceToolAssistantUUID` 记录对应的 tool_use 消息 UUID
+
+### 性能考量
+
+**1. 规范化惰性**:
+- 单 block 消息保持原 UUID，避免不必要的派生
+- `isNewChain` 标记延迟设置，减少 UUID 计算
+
+**2. findLast 优化**:
+- `getLastAssistantMessage()` 使用 `Array.findLast()` 从末尾查找
+- 比 `filter + last` 更高效（早期退出）
+
+**3. 短消息 ID**:
+- `deriveShortMessageId()` 取 UUID 前 10 位转 base36，得 6 位字符串
+- 用于 snip 工具引用，减少 token
+
+**4. 消息合并**:
+- `mergeUserMessages()` 合并相邻用户消息
+- 用于 tool result 合并，减少消息数量
+
+**5. 类型守卫性能**:
+- 类型守卫函数（`isToolUseRequestMessage` 等）使用简单条件判断
+- 避免复杂类型解析，保持高性能
+
+**6. 扩展字段**:
+- `[key: string]: unknown` 允许动态字段，但 TypeScript 无法优化
+- 工厂函数显式设置已知字段，减少动态访问
 
 ## Review 历史
 
