@@ -339,7 +339,146 @@ export type ToolUseContext = {
 
 ## L3 - 实现视角
 
-（待 L2 完成后填充）
+### 关键代码路径
+
+**buildTool 实现**:
+
+```text
+// 工具工厂函数：填充安全默认值
+const TOOL_DEFAULTS = {
+  isEnabled: () => true,
+  isConcurrencySafe: () => false,  // fail-closed: 默认不并发安全
+  isReadOnly: () => false,         // fail-closed: 默认写操作
+  isDestructive: () => false,
+  checkPermissions: (input) => ({ behavior: 'allow', updatedInput: input }),
+  toAutoClassifierInput: () => '',
+  userFacingName: () => '',
+}
+
+function buildTool(def) {
+  return {
+    ...TOOL_DEFAULTS,
+    userFacingName: () => def.name,  // 默认显示工具名
+    ...def,                          // 用户定义覆盖默认值
+  }
+}
+```
+
+**getTools 过滤流程**:
+
+```text
+function getTools(permissionContext) {
+  // 1. Simple mode 分支
+  if (CLAUDE_CODE_SIMPLE) {
+    if (REPL enabled) return [REPLTool]  // REPL 包装 Bash/Read/Edit
+    return [BashTool, FileReadTool, FileEditTool]
+  }
+  
+  // 2. 获取基础工具列表
+  tools = getAllBaseTools()
+  
+  // 3. 排除特殊工具（MCP 资源工具等）
+  tools = tools.filter(t => !specialTools.has(t.name))
+  
+  // 4. 应用 deny rules 过滤
+  tools = filterToolsByDenyRules(tools, permissionContext)
+  
+  // 5. REPL mode 隐藏原始工具
+  if (REPL enabled) {
+    tools = tools.filter(t => !REPL_ONLY_TOOLS.has(t.name))
+  }
+  
+  // 6. isEnabled 检查
+  return tools.filter(t => t.isEnabled())
+}
+```
+
+**assembleToolPool 合成流程**:
+
+```text
+function assembleToolPool(permissionContext, mcpTools) {
+  // 1. 获取内置工具（含权限过滤）
+  builtInTools = getTools(permissionContext)
+  
+  // 2. MCP 工具也应用 deny rules
+  allowedMcpTools = filterToolsByDenyRules(mcpTools, permissionContext)
+  
+  // 3. 分别排序（保证 prompt-cache 稳定性）
+  builtInTools.sort(byName)
+  allowedMcpTools.sort(byName)
+  
+  // 4. 合并并去重（内置工具优先）
+  return uniqBy([...builtInTools, ...allowedMcpTools], 'name')
+}
+```
+
+### 边界条件
+
+**1. Fail-closed 设计**:
+- `isConcurrencySafe` 默认 `false` → 新工具默认不可并发执行
+- `isReadOnly` 默认 `false` → 新工具默认视为写操作
+- `isDestructive` 默认 `false` → 破坏性标记需显式设置
+
+**2. Simple mode 特殊路径**:
+- `CLAUDE_CODE_SIMPLE=1` 时只暴露 Bash/Read/Edit
+- REPL mode 下隐藏原始工具，由 REPL 包装
+
+**3. REPL mode 工具隐藏**:
+- `REPL_ONLY_TOOLS` 包含 Bash/Read/Edit/Glob/Grep
+- REPL 启用时这些工具从列表中移除（但可通过 VM 调用）
+
+**4. 特殊工具排除**:
+- `ListMcpResourcesTool`、`ReadMcpResourceTool` 从基础列表排除
+- 在 MCP 相关上下文中单独添加
+
+**5. deny rule 前置过滤**:
+- MCP server 前缀规则（如 `mcp__server`）在模型看到工具列表前就过滤
+- 不是等到调用时才拒绝（减少无效 tool_use）
+
+**6. 工具名冲突处理**:
+- `uniqBy(..., 'name')` 去重
+- 内置工具排在前面，同名时内置优先
+
+**7. isEnabled 延迟检查**:
+- 先应用 deny rules，再检查 isEnabled
+- isEnabled 可能依赖动态状态（如 feature flags）
+
+### 性能考量
+
+**1. Prompt Cache 稳定性**:
+
+工具列表排序影响 API 的 prompt cache：
+- 工具顺序变化 → cache key 变化 → cache miss
+- 内置工具按字母排序，保持稳定前缀
+- MCP 工具单独排序，追加在后面
+
+设计原因：服务端的 `claude_code_system_cache_policy` 在最后一个内置工具后放置 cache breakpoint。如果 MCP 工具穿插在内置工具中，每次 MCP 工具变化都会破坏 cache。
+
+**2. 工具延迟加载**:
+
+`shouldDefer` 标记的工具：
+- API 请求时 `defer_loading: true`
+- 模型需要时通过 `ToolSearchTool` 搜索
+- 减少初始 prompt token（40+ 工具 schema 很大）
+
+**3. 工具集合类型**:
+
+`Tools = readonly Tool[]`：
+- `readonly` 防止运行时修改
+- 数组比 Map 更适合序列化给 API
+
+**4. buildTool 编译优化**:
+
+`buildTool` 是纯函数，输入确定则输出确定：
+- TypeScript 可内联优化
+- 60+ 工具都通过此函数，类型检查统一
+
+**5. 条件导入减少打包体积**:
+
+实验性工具用动态 `require`：
+- `process.env.USER_TYPE === 'ant'` → Ant 专属工具
+- `feature('PROACTIVE')` → 实验性功能
+- 不满足条件时工具代码不进入打包
 
 ## Review 历史
 
