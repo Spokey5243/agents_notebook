@@ -1034,7 +1034,51 @@ query profiling：
 
 ## Review 历史
 
-### 2026-04-19 - L2 Review
+### 2026-04-19 - L3 Review
+
+#### messagesRef 模式验证
+源码 setMessages wrapper 正确（Line 1453-1456）：
+- `const prev = messagesRef.current` ✅
+- `const next = typeof action === 'function' ? action(messagesRef.current) : action` ✅
+- `messagesRef.current = next` 先同步 ref ✅
+- 注释确认 "previously cost 20-56ms per prompt; the 56ms case was a GC pause" ✅ (Line 3503-3505)
+
+#### QueryGuard 状态机验证
+源码 QueryGuard.ts 完整实现：
+- `_status: 'idle' | 'dispatching' | 'running'` ✅ (Line 30)
+- `_generation: number` ✅ (Line 31)
+- `_changed = createSignal()` React external store ✅ (Line 32)
+- `tryStart()` atomically check + transition ✅
+- `end(generation)` stale finally protection ✅
+
+#### Ephemeral Progress 替换验证
+源码 onQueryEvent 逻辑正确（Line 3069-3094）：
+- `isEphemeralToolProgress()` 检查 ✅
+- 注释 "Sleep/Bash emit a tick per second" ✅
+- 替换而非 append 逻辑 ✅
+
+#### streamModeRef 模式验证
+源码模式正确：
+- `streamModeRef.current = streamMode` 每次渲染同步 ✅ (Line 1087)
+- callback 读取 ref 而非 state ✅
+
+#### Concurrent Query 检测验证
+源码 onQuery 中：
+- `const thisGeneration = queryGuard.tryStart()` ✅ (Line 3465)
+- `if (thisGeneration === null)` → enqueue message ✅ (Line 3466-3483)
+- `finally { if (queryGuard.end(thisGeneration)) ... }` ✅
+
+#### idle-return 检查验证
+源码 onSubmit 中：
+- `willowMode !== 'off'` 检查 ✅
+- `idleThresholdMin` 默认 75 分钟 ✅
+- `dialog` vs `hint` mode ✅
+
+#### immediate 命令验证
+源码 onSubmit 中：
+- `queryGuard.isActive && (matchingCommand?.immediate || options?.fromKeybinding)` ✅
+- `executeImmediateCommand()` async 执行 ✅
+- `return` early，不入队 ✅
 
 #### 核心函数表格验证
 源码函数签名验证：
