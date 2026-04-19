@@ -2,7 +2,7 @@
 
 > 项目: [[claude-code-best]]
 > 文件: src/screens/REPL.tsx (6314 行)
-> 状态: L1-in-progress
+> 状态: L1-complete
 
 ## L1 - 黑盒视角
 
@@ -19,11 +19,11 @@
 - `debug`: boolean — 调试模式
 - `initialTools`: Tool[] — 初始工具列表
 - `initialMessages`: MessageType[]? — 恢复会话时的初始消息
-- `pendingHookMessages`: Promise<HookResultMessage[]>? — SessionStart hook 消息
+- `pendingHookMessages`: `Promise<HookResultMessage[]>`? — SessionStart hook 消息
 - `mcpClients`: MCPServerConnection[]? — MCP 客户端连接
 - `systemPrompt`: string? — 自定义系统提示词
 - `appendSystemPrompt`: string? — 附加系统提示词
-- `onBeforeQuery`: (input, messages) => Promise<boolean>? — 查询前回调
+- `onBeforeQuery`: (input, messages) => `Promise<boolean>`? — 查询前回调
 - `onTurnComplete`: (messages) => void? — turn 完成回调
 - `disabled`: boolean? — 禁用输入
 - `mainThreadAgentDefinition`: AgentDefinition? — 主线程 agent 定义
@@ -63,11 +63,11 @@
 ### 黑盒调用记录
 
 **核心 API 调用**:
-- `query()` → AsyncGenerator<QueryEvent>, 主循环 API 调用
+- `query()` → `AsyncGenerator<QueryEvent>`, 主循环 API 调用
 - `getTools()` → Tool[], 获取可用工具列表
 - `assembleToolPool()` → Tool[], 组装工具池（含 MCP 工具）
-- `processSessionStartHooks()` → Promise<void>, SessionStart hook 处理
-- `executeSessionEndHooks()` → Promise<void>, SessionEnd hook 处理
+- `processSessionStartHooks()` → `Promise<void>`, SessionStart hook 处理
+- `executeSessionEndHooks()` → `Promise<void>`, SessionEnd hook 处理
 
 **状态管理**:
 - `useAppState()` → AppState slice, 状态读取
@@ -82,11 +82,11 @@
 
 **命令处理**:
 - `commands.find()` → Command?, 查找匹配命令
-- `matchingCommand.load()` → Promise<CommandModule>, 加载命令模块
-- `mod.call()` → Promise<JSX>, 执行命令
+- `matchingCommand.load()` → `Promise<CommandModule>`, 加载命令模块
+- `mod.call()` → `Promise<JSX>`, 执行命令
 
 **权限检查**:
-- `canUseTool()` → Promise<PermissionDecision>, 工具权限检查
+- `canUseTool()` → `Promise<PermissionDecision>`, 工具权限检查
 - `applyPermissionUpdate()` → PermissionContext, 应用权限更新
 
 **其他**:
@@ -197,6 +197,39 @@ transcript 模式支持消息选择：
 （待 L2 完成后填充）
 
 ## Review 历史
+
+### 2026-04-19 - L1 Review
+
+#### Props 结构验证
+源码 Props 类型定义正确（Line 757-801）：
+- `commands`, `debug`, `initialTools` ✅
+- `initialMessages`, `pendingHookMessages` ✅
+- `mcpClients`, `dynamicMcpConfig` ✅
+- `systemPrompt`, `appendSystemPrompt` ✅
+- `onBeforeQuery`, `onTurnComplete` ✅
+- `thinkingConfig: ThinkingConfig` ✅ (Line 800)
+
+#### QueryGuard 状态机验证
+源码 QueryGuard.ts 状态机正确：
+- 三状态：`idle` | `dispatching` | `running` ✅ (Line 30)
+- `tryStart()` → 返回 generation number 或 null ✅ (Line 61-67)
+- `end(generation)` → 检查是否当前 generation ✅ (Line 74-80)
+- `reserve()`, `cancelReservation()` 用于队列处理 ✅
+
+#### REPL 组件导入验证
+- `import { QueryGuard } from '../utils/QueryGuard.js'` ✅ (Line 71)
+- `const queryGuard = React.useRef(new QueryGuard()).current` ✅ (Line 1140)
+
+#### 流式状态验证
+- `useState<StreamingToolUse[]>` ✅ (Line 1088)
+- `useState<StreamingThinking | null>` ✅ (Line 1089)
+- `useState<SpinnerMode>('responding')` ✅ (Line 1077)
+
+#### query 循环验证
+源码调用流程正确：
+- `for await (const event of query({ ... }))` ✅ (Line 3343)
+- `onQueryEvent(event)` 处理每个事件 ✅ (Line 3352)
+- `queryGuard.tryStart()` 并发检查 ✅ (Line 3465)
 
 ## 疑问与待查
 
