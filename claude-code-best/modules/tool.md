@@ -370,6 +370,22 @@ export type ToolUseContext = {
 - 进度回调（`ToolCallProgress<P>`） ✅
 - 结果渲染（mapToolResultToToolResultBlockParam） ✅
 
+### 2026-04-19 - L2 Review
+
+#### 核心函数表格验证
+所有函数签名经源码验证正确：
+- `toolMatchesName()` 签名 ✅
+- `findToolByName()` 签名 ✅
+- `Tool.call()` 参数顺序 ✅
+- `interruptBehavior()` 返回类型 `'cancel' | 'block'` ✅
+
+#### ToolUseContext 关键字段
+笔记列举了约 30 个关键字段，源码实际约 50 个字段。笔记简化是合理的（只列核心字段）。
+
+#### 工具生命周期流程
+调用阶段的步骤顺序验证正确：
+- validateInput → checkPermissions → canUseTool → call → mapToolResultToToolResultBlockParam
+
 ## 疑问与待查
 
 - [ ] `ToolUseContext` 的完整字段列表？
