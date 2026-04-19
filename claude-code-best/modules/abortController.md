@@ -448,7 +448,29 @@ Claude Code 多组件监听同一 signal
 
 ## Review 历史
 
-### 2026-04-19 - L1 Review
+### 2026-04-19 - L2 Review
+
+#### 函数签名验证
+源码验证正确：
+- `createAbortController(maxListeners?: number): AbortController` ✅
+- `createChildAbortController(parent: AbortController, maxListeners?: number): AbortController` ✅
+
+#### AbortController 类型位置验证
+源码验证正确：
+- `abortController: AbortController` 在 ToolUseContext 中第 182 行 ✅
+- ToolUseContext 类型定义在 Tool.ts 第 160 行 ✅
+
+#### query 返回值验证
+源码验证正确：
+- `{ reason: 'aborted_streaming' }` — query.ts 第 1274 行 ✅
+- `{ reason: 'aborted_tools' }` — query.ts 第 1738 行 ✅
+- `{ reason: 'completed' }` — query.ts 第 1487, 1580 行 ✅
+- `{ reason: 'hook_stopped' }` — query.ts 第 1743 行 ✅
+
+#### AbortSignal 类型验证
+AbortController 和 AbortSignal 是 Web API 内置类型，源码直接使用，无需自定义 ✅
+
+**结论**: L2 笔记结论全部正确，无需修正。
 
 #### reason 类型验证
 源码验证正确：
