@@ -74,16 +74,16 @@
 
 ### 消息类型概览
 
-| 类型 | 说明 | 关键字段 |
-|------|------|----------|
-| `Message` | 基类型 | `type`, `uuid`, `isMeta`, `message` |
-| `UserMessage` | 用户输入 | `type: 'user'`, `message.content`, `imagePasteIds` |
-| `AssistantMessage` | AI 回复 | `type: 'assistant'`, `message.content`, `message.usage` |
-| `SystemMessage` | 系统消息 | `type: 'system'`, 多种 subtype |
-| `AttachmentMessage` | 附件 | `type: 'attachment'`, `attachment` |
-| `ProgressMessage` | 进度 | `type: 'progress'`, `data` |
-| `GroupedToolUseMessage` | 工具分组 | `type: 'grouped_tool_use'`, `toolName`, `messages` |
-| `CollapsedReadSearchGroup` | 折叠组 | `type: 'collapsed_read_search'`, `readCount`, `searchCount` |
+| 类型                         | 说明    | 关键字段                                                        |
+| -------------------------- | ----- | ----------------------------------------------------------- |
+| `Message`                  | 基类型   | `type`, `uuid`, `isMeta`, `message`                         |
+| `UserMessage`              | 用户输入  | `type: 'user'`, `message.content`, `imagePasteIds`          |
+| `AssistantMessage`         | AI 回复 | `type: 'assistant'`, `message.content`, `message.usage`     |
+| `SystemMessage`            | 系统消息  | `type: 'system'`, 多种 subtype                                |
+| `AttachmentMessage`        | 附件    | `type: 'attachment'`, `attachment`                          |
+| `ProgressMessage`          | 进度    | `type: 'progress'`, `data`                                  |
+| `GroupedToolUseMessage`    | 工具分组  | `type: 'grouped_tool_use'`, `toolName`, `messages`          |
+| `CollapsedReadSearchGroup` | 折叠组   | `type: 'collapsed_read_search'`, `readCount`, `searchCount` |
 
 ### 关键设计决策
 
@@ -116,22 +116,22 @@
 
 ### 核心函数
 
-| 函数名 | 作用 | 关键参数 | 返回类型 |
-|--------|------|----------|----------|
-| `createUserMessage()` | 创建用户消息 | `content`, `isMeta`, `toolUseResult`, `origin`, `uuid` | `UserMessage` |
-| `createAssistantMessage()` | 创建 AI 消息 | `content`, `usage`, `isVirtual` | `AssistantMessage` |
-| `createProgressMessage()` | 创建进度消息 | `toolUseID`, `parentToolUseID`, `data` | `ProgressMessage<P>` |
-| `createCompactBoundaryMessage()` | 创建压缩边界 | `trigger`, `preTokens`, `lastPreCompactMessageUuid` | `SystemCompactBoundaryMessage` |
-| `normalizeMessages()` | 规范化消息列表 | `messages: Message[]` | `NormalizedMessage[]` |
-| `getLastAssistantMessage()` | 获取最后 AI 消息 | `messages` | `AssistantMessage | undefined` |
-| `isNotEmptyMessage()` | 判断消息有内容 | `message` | `boolean` |
-| `isToolUseRequestMessage()` | 判断工具调用请求 | `message` | `boolean`（类型守卫） |
-| `isToolUseResultMessage()` | 判断工具结果 | `message` | `boolean`（类型守卫） |
-| `isSyntheticMessage()` | 判断合成消息 | `message` | `boolean` |
-| `hasToolCallsInLastAssistantTurn()` | 判断最后有工具调用 | `messages` | `boolean` |
-| `deriveUUID()` | 派生 UUID | `parentUUID`, `index` | `UUID` |
-| `deriveShortMessageId()` | 生成短消息 ID | `uuid` | `string` |
-| `mergeUserMessages()` | 合并用户消息 | `a`, `b` | `UserMessage` |
+| 函数名                                 | 作用         | 关键参数                                                   | 返回类型                           |            |
+| ----------------------------------- | ---------- | ------------------------------------------------------ | ------------------------------ | ---------- |
+| `createUserMessage()`               | 创建用户消息     | `content`, `isMeta`, `toolUseResult`, `origin`, `uuid` | `UserMessage`                  |            |
+| `createAssistantMessage()`          | 创建 AI 消息   | `content`, `usage`, `isVirtual`                        | `AssistantMessage`             |            |
+| `createProgressMessage()`           | 创建进度消息     | `toolUseID`, `parentToolUseID`, `data`                 | `ProgressMessage<P>`           |            |
+| `createCompactBoundaryMessage()`    | 创建压缩边界     | `trigger`, `preTokens`, `lastPreCompactMessageUuid`    | `SystemCompactBoundaryMessage` |            |
+| `normalizeMessages()`               | 规范化消息列表    | `messages: Message[]`                                  | `NormalizedMessage[]`          |            |
+| `getLastAssistantMessage()`         | 获取最后 AI 消息 | `messages`                                             | `AssistantMessage              | undefined` |
+| `isNotEmptyMessage()`               | 判断消息有内容    | `message`                                              | `boolean`                      |            |
+| `isToolUseRequestMessage()`         | 判断工具调用请求   | `message`                                              | `boolean`（类型守卫）                |            |
+| `isToolUseResultMessage()`          | 判断工具结果     | `message`                                              | `boolean`（类型守卫）                |            |
+| `isSyntheticMessage()`              | 判断合成消息     | `message`                                              | `boolean`                      |            |
+| `hasToolCallsInLastAssistantTurn()` | 判断最后有工具调用  | `messages`                                             | `boolean`                      |            |
+| `deriveUUID()`                      | 派生 UUID    | `parentUUID`, `index`                                  | `UUID`                         |            |
+| `deriveShortMessageId()`            | 生成短消息 ID   | `uuid`                                                 | `string`                       |            |
+| `mergeUserMessages()`               | 合并用户消息     | `a`, `b`                                               | `UserMessage`                  |            |
 
 ### 核心类型
 
@@ -272,6 +272,19 @@ export function getLastAssistantMessage(
 
 #### createProgressMessage 参数
 ~~`createProgressMessage`: `data`, `uuid`, `timestamp`~~
+> ❌ **参数错误**: 源码参数是工具调用 ID 相关。
+> **正确参数**: `toolUseID`, `parentToolUseID`, `data`
+
+### 2026-04-19 - L2 Review
+
+#### CollapsedReadSearchGroup 类型定位
+~~`CollapsedReadSearchGroup` — 折叠的 read/search 组（在类型定义列表中）~~
+> ⚠️ **补充说明**: 源码显示该类型**不继承 `Message`**，是独立结构。
+> **实际定位**: `CollapsedReadSearchGroup` 是 UI 渲染专用类型，被包含在 `RenderableMessage` 联合类型中，但不属于 Message 子类型体系。
+
+#### ProgressMessage 类型定义
+笔记中只写了 `type: 'progress'`, `data: T`，但工厂函数创建的对象还包含 `toolUseID` 和 `parentToolUseID`。
+> ⚠️ **补充说明**: 类型定义只有核心字段，工厂函数会额外注入 `uuid`, `timestamp`, `toolUseID`, `parentToolUseID` 等字段（通过 `[key: string]: unknown` 扩展）。
 > ❌ **参数错误**: 源码参数是工具调用 ID 相关。
 > **正确参数**: `toolUseID`, `parentToolUseID`, `data`
 
