@@ -481,6 +481,164 @@ reorderMessagesInUI(messages, syntheticStreamingToolUseMessages) {
 - `[key: string]: unknown` 允许动态字段，但 TypeScript 无法优化
 - 工厂函数显式设置已知字段，减少动态访问
 
+### 流式传输机制
+
+**核心原理**: HTTP chunked transfer + SSE 协议 + SDK buffer 检查 + 增量事件聚合。
+
+#### SSE 协议格式
+
+```text
+HTTP 响应:
+Content-Type: text/event-stream
+Transfer-Encoding: chunked  ← 分块传输，不知道总长度
+
+SSE 事件格式:
+event: {事件类型}
+data: {JSON数据}
+
+(空行分隔下一个事件)
+
+示例:
+event: message_start
+data: {"type":"message_start","message":{"id":"msg_xxx"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"text":"Hel"}}
+```
+
+#### SDK 解析流程
+
+```text
+┌──────────────┐
+│ HTTP Stream   │
+│ ReadableStream│
+│ reader.read() │
+└──────────────┘
+       ↓ chunk (字节块，大小不确定)
+┌──────────────┐
+│ TextDecoder   │
+│ buffer += str │
+└──────────────┘
+       ↓ 检查 '\n\n' 分隔符
+┌──────────────┐
+│ split('\n\n') │
+│ 提取完整事件   │
+│ 保留不完整部分 │
+└──────────────┘
+       ↓ JSON.parse
+┌──────────────┐
+│ DeltaEvent    │
+│ 增量事件对象   │
+└──────────────┘
+       ↓ SDK 聚合
+┌──────────────┐
+│ AssistantMessage│
+│ 完整消息对象    │
+└──────────────┘
+```
+
+#### Buffer 检查机制
+
+```typescript
+// SDK 内部简化逻辑
+let buffer = ''
+
+while (true) {
+  const chunk = await reader.read()  // 收到一块数据
+  buffer += chunk  // append 到 buffer
+
+  // 按 '\n\n' 分割（SSE 事件分隔符）
+  const parts = buffer.split('\n\n')
+
+  // 最后一个可能不完整
+  buffer = parts.pop()
+
+  // 解析前面所有完整的
+  for (const completeEvent of parts) {
+    yield parseSSE(completeEvent)
+  }
+}
+```
+
+#### 增量事件类型
+
+| 事件类型                  | 说明           | 关键字段                                         |
+| --------------------- | ------------ | -------------------------------------------- |
+| `message_start`       | 消息开始         | `message.id`, `message.model`                |
+| `content_block_start` | 新 block 开始   | `index`, `content_block.type`                |
+| `content_block_delta` | block 内容增量   | `index`, `delta.text` / `delta.partial_json` |
+| `content_block_stop`  | block 结束     | `index`                                      |
+| `message_delta`       | message 级别更新 | `usage`, `stop_reason`                       |
+| `message_stop`        | 消息结束         | 无                                            |
+
+#### 增量聚合示例
+
+```text
+用户: "Hello"
+
+模型生成（逐 token）:
+  H → e → l → l → o → !
+
+SSE 事件流:
+  event: content_block_delta, data: {"delta":{"text":"H"}}
+  event: content_block_delta, data: {"delta":{"text":"e"}}
+  event: content_block_delta, data: {"delta":{"text":"l"}}
+  ...
+
+SDK 聚合:
+  text += "H" → "H"
+  text += "e" → "He"
+  text += "l" → "Hel"
+  ...
+
+最终 AssistantMessage:
+  content[0].text === "Hello!"  ← 完整文本
+```
+
+#### Chunk 与事件边界不对齐
+
+```text
+问题: TCP chunk 分割和 SSE 事件边界不对齐
+
+TCP 发送: 按 MTU 分割（~1500 字节）
+SSE 事件: 按 '\n\n' 分割（大小不固定）
+
+一个 chunk 可能包含:
+  - 多个完整 SSE 事件
+  - 半个 SSE 事件
+  - 1.x 个 SSE 事件
+
+解决: buffer 缓存不完整部分，等下一个 chunk
+```
+
+#### 流式 vs 非流式对比
+
+| 方面             | 非流式                   | 流式                                |
+| -------------- | --------------------- | --------------------------------- |
+| HTTP 响应        | `application/json`    | `text/event-stream`               |
+| Content-Length | 知道总长度                 | 不知道（`Transfer-Encoding: chunked`） |
+| 返回数据           | 完整 JSON               | SSE 事件流                           |
+| SDK 解析         | 一次 `JSON.parse`       | 逐事件 `JSON.parse` + 聚合             |
+| 用户收到           | 完整 `AssistantMessage` | 增量 `DeltaEvent` → 聚合              |
+| 首字节延迟          | 高（等完整响应）              | 低（立即开始）                           |
+
+#### Claude Code 的特殊处理
+
+```typescript
+// claude.ts 注释（第 1869-1871 行）
+// Use raw stream instead of BetaMessageStream
+// BetaMessageStream calls partialParse() on every input_json_delta
+// which is O(n²) - Claude Code handles tool input accumulation themselves
+
+for await (const part of stream) {
+  if (part.type === 'content_block_delta' && part.delta.type === 'input_json_delta') {
+    toolInputBuffer += part.delta.partial_json  // 手动拼接 JSON
+  }
+}
+```
+
+**关键区别**: SSE 返回的是增量事件（`DeltaEvent`），不是完整 `AssistantMessage`。多个 delta 事件拼接后才构成完整消息对象。
+
 ## Review 历史
 
 ### 2026-04-19 - L1 Review

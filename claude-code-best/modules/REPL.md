@@ -100,18 +100,18 @@
 
 REPL 是一个 6314 行的大型 React/Ink 组件，包含以下核心子系统：
 
-| 子系统 | 职责 | 关键组件/Hook |
-|--------|------|---------------|
-| **消息管理** | 消息列表渲染、滚动、选择 | Messages, MessageSelector, VirtualMessageList |
-| **输入处理** | 用户输入、命令解析、快捷键 | PromptInput, useInput, GlobalKeybindingHandlers |
-| **API 循环** | query 调用、流式处理、工具执行 | query(), onQuery, onQueryEvent |
-| **权限交互** | 工具权限确认、对话框 | PermissionRequest, useCanUseTool |
-| **命令系统** | 斜杠命令执行、immediate/queued | commands, useCommandQueue |
-| **MCP 集成** | MCP 客户端、工具、命令 | useMergedClients, useMergedTools |
-| **任务管理** | agent 任务列表、状态 | TaskListV2, useTasksV2 |
-| **通知系统** | 各种通知、提示 | useNotifications, addNotification |
-| **会话管理** | 会话恢复、保存、标题 | sessionStorage, sessionTitle |
-| **IDE 集成** | VS Code/Cursor 连接 | useIDEIntegration, useIdeSelection |
+| 子系统        | 职责                      | 关键组件/Hook                                       |
+| ---------- | ----------------------- | ----------------------------------------------- |
+| **消息管理**   | 消息列表渲染、滚动、选择            | Messages, MessageSelector, VirtualMessageList   |
+| **输入处理**   | 用户输入、命令解析、快捷键           | PromptInput, useInput, GlobalKeybindingHandlers |
+| **API 循环** | query 调用、流式处理、工具执行      | query(), onQuery, onQueryEvent                  |
+| **权限交互**   | 工具权限确认、对话框              | PermissionRequest, useCanUseTool                |
+| **命令系统**   | 斜杠命令执行、immediate/queued | commands, useCommandQueue                       |
+| **MCP 集成** | MCP 客户端、工具、命令           | useMergedClients, useMergedTools                |
+| **任务管理**   | agent 任务列表、状态           | TaskListV2, useTasksV2                          |
+| **通知系统**   | 各种通知、提示                 | useNotifications, addNotification               |
+| **会话管理**   | 会话恢复、保存、标题              | sessionStorage, sessionTitle                    |
+| **IDE 集成** | VS Code/Cursor 连接       | useIDEIntegration, useIdeSelection              |
 
 ### 关键设计决策
 
@@ -192,15 +192,15 @@ transcript 模式支持消息选择：
 
 ### 核心函数
 
-| 函数名 | 作用 | 关键参数 | 返回类型 |
-|--------|------|----------|----------|
-| `REPL()` | 主组件 | `Props` | `React.ReactNode` |
-| `onSubmit()` | 用户输入提交 | `input`, `helpers`, `speculationAccept?` | `Promise<void>` |
-| `onQuery()` | query 触发入口 | `newMessages`, `abortController`, `shouldQuery`, `additionalAllowedTools`, `mainLoopModelParam` | `Promise<void>` |
-| `onQueryImpl()` | query 执行实现 | `messagesIncludingNewMessages`, `newMessages`, `abortController`, `shouldQuery`, `additionalAllowedTools`, `mainLoopModelParam`, `effort?` | `Promise<void>` |
-| `onQueryEvent()` | 流式事件处理 | `event` | `void` |
-| `getToolUseContext()` | 构建工具执行上下文 | `messages`, `newMessages`, `abortController`, `mainLoopModel` | `ProcessUserInputContext` |
-| `canUseTool()` | 工具权限检查 | `toolName`, `toolUseID`, `input`, `context` | `Promise<PermissionDecision>` |
+| 函数名                   | 作用         | 关键参数                                                                                                                                       | 返回类型                          |
+| --------------------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------- |
+| `REPL()`              | 主组件        | `Props`                                                                                                                                    | `React.ReactNode`             |
+| `onSubmit()`          | 用户输入提交     | `input`, `helpers`, `speculationAccept?`                                                                                                   | `Promise<void>`               |
+| `onQuery()`           | query 触发入口 | `newMessages`, `abortController`, `shouldQuery`, `additionalAllowedTools`, `mainLoopModelParam`                                            | `Promise<void>`               |
+| `onQueryImpl()`       | query 执行实现 | `messagesIncludingNewMessages`, `newMessages`, `abortController`, `shouldQuery`, `additionalAllowedTools`, `mainLoopModelParam`, `effort?` | `Promise<void>`               |
+| `onQueryEvent()`      | 流式事件处理     | `event`                                                                                                                                    | `void`                        |
+| `getToolUseContext()` | 构建工具执行上下文  | `messages`, `newMessages`, `abortController`, `mainLoopModel`                                                                              | `ProcessUserInputContext`     |
+| `canUseTool()`        | 工具权限检查     | `toolName`, `toolUseID`, `input`, `context`                                                                                                | `Promise<PermissionDecision>` |
 
 ### 核心类型
 
