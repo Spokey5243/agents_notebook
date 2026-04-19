@@ -1,8 +1,8 @@
 # claude-code-best 阅读进度
 
 ## 当前状态
-- 正在读: `hook` (L1 完成)
-- 下一步: hook L1 review
+- 正在读: `hook` (L1 review 完成)
+- 下一步: hook L2
 
 ## 已完成模块
 | 模块         | L1  | L2  | L3  | Review          |
@@ -12,7 +12,7 @@
 | message    | ✅   | ✅   | ✅   | ✅ 2026-04-19    |
 | tool       | ✅   | ✅   | ✅   | ✅ 全部 2026-04-19 |
 | permission | ✅   | ✅   | ✅   | ✅ 全部 2026-04-19 |
-| hook       | ✅   | ❌   | ❌   | ❌ |
+| hook       | ✅   | ❌   | ❌   | ✅ L1 2026-04-19 |
 
 ## 计划模块
 - tool

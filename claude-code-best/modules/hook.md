@@ -206,7 +206,26 @@ hook 可覆盖权限系统，实现自定义审批逻辑。
 
 ## Review 历史
 
-（待 review）
+### 2026-04-19 - L1 Review
+
+#### HOOK_EVENTS 列表验证
+笔记中 HOOK_EVENTS 列表正确：
+- 28 个事件类型 ✅
+- 包含 PreToolUse, PostToolUse, SessionStart, PermissionRequest 等 ✅
+
+#### 超时常量验证
+- `TOOL_HOOK_EXECUTION_TIMEOUT_MS = 10 * 60 * 1000` (10 分钟) ✅
+- SessionEnd 超时 `1500ms` ✅
+
+#### HookResult 类型验证
+字段列表正确：
+- `outcome`: 'success' | 'blocking' | 'non_blocking_error' | 'cancelled' ✅
+- `permissionBehavior` 字段存在 ✅
+
+#### 其余内容验证
+- 同步/异步模式设计 ✅
+- matcher 过滤机制 ✅
+- Workspace Trust 安全检查 ✅
 
 ## 疑问与待查
 
