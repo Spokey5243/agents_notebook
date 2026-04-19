@@ -447,6 +447,21 @@ getMatchingHooks() 匹配逻辑：
 - matcher 过滤机制 ✅
 - Workspace Trust 安全检查 ✅
 
+### 2026-04-19 - L2 Review
+
+#### executeHooks 流程验证
+源码步骤正确：
+- shouldDisableAllHooksIncludingManaged() 检查 ✅
+- getMatchingHooks() 匹配逻辑 ✅
+- internal callback 快速路径 ✅
+- emitHookStarted/emitHookResponse 广播 ✅
+
+#### HookInput 结构验证
+各事件输入字段正确：
+- PreToolUseHookInput: session_id, tool_name, tool_input ✅
+- PostToolUseHookInput: 增加 tool_result ✅
+- PermissionRequestHookInput: 增加 permission_mode ✅
+
 ## 疑问与待查
 
 - [ ] `executeHooks()` 的完整执行流程？
