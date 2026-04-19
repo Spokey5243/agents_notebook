@@ -14,7 +14,7 @@
 | permission   | ✅   | ✅   | ✅   | ✅ 全部 2026-04-19 |
 | hook         | ✅   | ✅   | ✅   | ✅ 全部 2026-04-19 |
 | REPL         | ✅   | ✅   | ✅   | ✅ 全部 2026-04-19 |
-| abortController | ✅   | ⏳   | ❌   | ❌               |
+| abortController | ✅   | ✅   | ✅   | ✅ 2026-04-19    |
 
 ## 计划模块
 - QueryEngine

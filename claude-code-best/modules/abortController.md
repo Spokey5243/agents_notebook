@@ -448,6 +448,34 @@ Claude Code 多组件监听同一 signal
 
 ## Review 历史
 
+### 2026-04-19 - L1 Review
+
+#### reason 类型验证
+源码验证正确：
+- `abortController.abort('user-cancel')` — REPL.tsx 第 2515, 2520 行 ✅
+- `abortController.abort('background')` — REPL.tsx 第 2950 行 ✅
+- `abortController.abort('interrupt')` — REPL.tsx 第 4909 行 ✅
+
+#### 中断消息显示逻辑验证
+源码验证正确：
+- `if (signal.reason !== 'interrupt') { yield createUserInterruptionMessage() }` — query.ts 第 1269, 1724 行 ✅
+
+#### maxListeners 默认值验证
+源码验证正确：
+- `DEFAULT_MAX_LISTENERS = 50` — abortController.ts 第 6 行 ✅
+
+#### WeakRef 内存安全验证
+源码验证正确：
+- `const weakChild = new WeakRef(child)` — abortController.ts 第 83 行 ✅
+- `const weakParent = new WeakRef(parent)` — abortController.ts 第 84 行 ✅
+
+#### 父子级联传播验证
+源码验证正确：
+- `propagateAbort()` 父中断传播到子 ✅
+- `child.abort()` 不影响父 ✅
+
+**结论**: L1 笔记结论全部正确，无需修正。
+
 ## 疑问与待查
 
 - [ ] AbortController 与 Hook 的 StopUserCancelled 事件的关系？
