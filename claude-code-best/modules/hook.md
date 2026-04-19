@@ -2,7 +2,7 @@
 
 > 项目: [[claude-code-best]]
 > 文件: src/types/hooks.ts, src/utils/hooks.ts, src/utils/hooks/hookEvents.ts
-> 状态: L1-in-progress
+> 状态: L3-complete
 
 ## L1 - 黑盒视角
 
@@ -422,7 +422,577 @@ getMatchingHooks() 匹配逻辑：
 
 ## L3 - 实现视角
 
-（待 L2 完成后填充）
+### 关键代码路径
+
+**executeHooks 主流程**:
+
+```text
+async function* executeHooks({
+  hookInput, toolUseID, matchQuery, signal, timeoutMs, toolUseContext, ...
+}): AsyncGenerator<AggregatedHookResult> {
+
+  // Step 1: 前置检查
+  if (shouldDisableAllHooksIncludingManaged()) return
+  if (CLAUDE_CODE_SIMPLE) return
+  if (shouldSkipHookDueToTrust()) return  // 安全：未信任 workspace 不执行
+
+  // Step 2: 获取匹配 hook
+  const matchingHooks = await getMatchingHooks(appState, sessionId, hookEvent, hookInput)
+  if (matchingHooks.length === 0) return
+
+  // Step 3: 快速路径（全部 internal callback）
+  if (userHooks.length === 0) {
+    // 只有 internal callback（如 sessionFileAccessHooks）
+    // 跳过 span/progress/abortSignal/processHookJSONOutput
+    // 测量耗时，直接调用 callback，return
+    for (const { hook } of matchingHooks) {
+      if (hook.type === 'callback') {
+        await hook.callback(hookInput, toolUseID, signal, i, context)
+      }
+    }
+    return  // 不 yield，直接退出
+  }
+
+  // Step 4: 常规路径
+  const hookSpan = startHookSpan(...)  // beta tracing
+  const batchStartTime = Date.now()
+
+  // Step 4a: yield progress message（每个 hook 一个）
+  for (const { hook } of matchingHooks) {
+    yield { message: { type: 'progress', data: { type: 'hook_progress', ... } } }
+  }
+
+  // Step 4b: 惰性 stringify hookInput（共享给所有 command/prompt hooks）
+  let jsonInputResult: { ok: true; value: string } | { ok: false; error } | undefined
+  function getJsonInput() {
+    if (jsonInputResult !== undefined) return jsonInputResult
+    return (jsonInputResult = { ok: true, value: jsonStringify(hookInput) })
+  }
+
+  // Step 4c: 并行执行所有 hook（每个 hook 一个 async generator）
+  const hookPromises = matchingHooks.map(async function* ({ hook, ... }): AsyncGenerator<HookResult> {
+    const { signal: abortSignal, cleanup } = createCombinedAbortSignal(signal, { timeoutMs })
+
+    if (hook.type === 'callback') {
+      yield executeHookCallback(...).finally(cleanup)
+      return
+    }
+
+    if (hook.type === 'function') {
+      yield executeFunctionHook(...)
+      return
+    }
+
+    // Command/Prompt/Agent/HTTP hooks 需要 jsonInput
+    const jsonInput = getJsonInput().value
+
+    if (hook.type === 'prompt') {
+      yield execPromptHook(...)
+      cleanup()
+      return
+    }
+
+    if (hook.type === 'agent') {
+      yield execAgentHook(...)
+      cleanup()
+      return
+    }
+
+    if (hook.type === 'http') {
+      emitHookStarted(hookId, hookName, hookEvent)
+      const httpResult = await execHttpHook(...)
+      emitHookResponse(...)
+      yield httpResult
+      cleanup()
+      return
+    }
+
+    // Command hook（最常见）
+    emitHookStarted(hookId, hookName, hookEvent)
+    const { stdout, stderr, status, aborted, backgrounded } = await execCommandHook(...)
+
+    if (backgrounded) {
+      // 异步 hook：已注册到 AsyncHookRegistry
+      yield { outcome: 'success', hook }
+      cleanup()
+      return
+    }
+
+    emitHookResponse(...)
+
+    if (status === 2) {
+      // Exit code 2 = blocking error
+      yield { blockingError: { blockingError: stderr || stdout, command }, outcome: 'blocking', hook }
+      cleanup()
+      return
+    }
+
+    if (aborted) {
+      yield { outcome: 'cancelled', hook }
+      cleanup()
+      return
+    }
+
+    // 解析 JSON 输出
+    const parsed = parseHookOutput(stdout)
+    if (parsed.json) {
+      yield processHookJSONOutput({ json: parsed.json, ... })
+    } else {
+      yield { message: ..., outcome: 'non_blocking_error', hook }
+    }
+    cleanup()
+  })
+
+  // Step 5: 聚合结果（遍历所有 hook generator）
+  const aggregated: AggregatedHookResult = {}
+  for await (const hookResult of all(hookPromises)) {
+    // 合并 additionalContext
+    if (hookResult.additionalContext) {
+      aggregated.additionalContexts = [...(aggregated.additionalContexts || []), hookResult.additionalContext]
+    }
+
+    // 取最严格 permissionBehavior
+    if (hookResult.permissionBehavior) {
+      const current = aggregated.permissionBehavior
+      if (!current || current === 'allow' || current === 'passthrough') {
+        aggregated.permissionBehavior = hookResult.permissionBehavior
+      }
+    }
+
+    // 合并 blockingErrors
+    if (hookResult.blockingError) {
+      aggregated.blockingErrors = [...(aggregated.blockingErrors || []), hookResult.blockingError]
+    }
+
+    // preventContinuation: 任一 hook 设置则整体阻止
+    if (hookResult.preventContinuation) {
+      aggregated.preventContinuation = true
+    }
+
+    // updatedInput: 最后一个有效值覆盖
+    if (hookResult.updatedInput) {
+      aggregated.updatedInput = hookResult.updatedInput
+    }
+  }
+
+  // Step 6: yield 聚合结果
+  yield aggregated
+
+  // Step 7: 结束
+  endHookSpan(hookSpan)
+  const totalDurationMs = Date.now() - batchStartTime
+  logEvent('tengu_repl_hook_finished', { hookName, numCommands, totalDurationMs, ... })
+}
+```
+
+**getMatchingHooks 实现**:
+
+```text
+async function getMatchingHooks(appState, sessionId, hookEvent, hookInput, tools): Promise<MatchedHook[]> {
+
+  // Step 1: 获取 hook 配置
+  const hookMatchers = getHooksConfig(appState, sessionId, hookEvent)
+
+  // Step 2: 确定 matchQuery（按事件类型）
+  let matchQuery: string | undefined
+  switch (hookInput.hook_event_name) {
+    case 'PreToolUse': matchQuery = hookInput.tool_name  // 匹配工具名
+    case 'PostToolUse': matchQuery = hookInput.tool_name
+    case 'SessionStart': matchQuery = hookInput.source   // 匹配来源
+    case 'PreCompact': matchQuery = hookInput.trigger    // 匹配触发器
+    case 'FileChanged': matchQuery = basename(hookInput.file_path)  // 匹配文件名
+    ...
+  }
+
+  // Step 3: 过滤 matcher
+  const filteredMatchers = matchQuery
+    ? hookMatchers.filter(m => !m.matcher || matchesPattern(matchQuery, m.matcher))
+    : hookMatchers
+
+  // Step 4: 展开 hooks（每个 matcher 可含多个 hook）
+  const matchedHooks = filteredMatchers.flatMap(matcher => {
+    const pluginRoot = matcher.pluginRoot
+    const skillRoot = matcher.skillRoot
+    const hookSource = pluginRoot ? `plugin:${matcher.pluginName}` : skillRoot ? `skill:...` : 'settings'
+    return matcher.hooks.map(hook => ({ hook, pluginRoot, skillRoot, hookSource }))
+  })
+
+  // Step 5: 快速路径（全部 callback/function）
+  if (matchedHooks.every(m => m.hook.type === 'callback' || m.hook.type === 'function')) {
+    return matchedHooks  // 不需要 dedup
+  }
+
+  // Step 6: deduplication（按类型分别去重）
+  const uniqueCommandHooks = Array.from(new Map(
+    matchedHooks.filter(m => m.hook.type === 'command')
+      .map(m => [hookDedupKey(m, `${m.hook.shell ?? 'bash'}\0${m.hook.command}`), m])
+  ).values())
+
+  const uniquePromptHooks = Array.from(new Map(
+    matchedHooks.filter(m => m.hook.type === 'prompt')
+      .map(m => [hookDedupKey(m, `${m.hook.prompt}`), m])
+  ).values())
+
+  // ... 类似处理 agent/http hooks
+
+  const callbackHooks = matchedHooks.filter(m => m.hook.type === 'callback')
+  const functionHooks = matchedHooks.filter(m => m.hook.type === 'function')
+
+  // Step 7: 合并返回
+  return [...uniqueCommandHooks, ...uniquePromptHooks, ...uniqueAgentHooks, ...uniqueHttpHooks, ...callbackHooks, ...functionHooks]
+}
+```
+
+**execCommandHook 实现**:
+
+```text
+async function execCommandHook(hook, hookEvent, hookName, jsonInput, signal, hookId, ...): Promise<{
+  stdout, stderr, output, status, aborted?, backgrounded?
+}> {
+
+  // Step 1: Shell 选择
+  const shellType = hook.shell ?? DEFAULT_HOOK_SHELL  // 'bash' | 'powershell'
+  const isPowerShell = shellType === 'powershell'
+
+  // Step 2: Windows 路径转换（bash 用 POSIX path）
+  const toHookPath = isWindows && !isPowerShell
+    ? (p: string) => windowsPathToPosixPath(p)  // C:\Users\foo -> /c/Users/foo
+    : (p: string) => p
+
+  // Step 3: 变量替换
+  let command = hook.command
+  if (pluginRoot) {
+    command = command.replace(/\$\{CLAUDE_PLUGIN_ROOT\}/g, () => toHookPath(pluginRoot))
+    if (pluginId) {
+      command = command.replace(/\$\{CLAUDE_PLUGIN_DATA\}/g, () => toHookPath(getPluginDataDir(pluginId)))
+    }
+    command = substituteUserConfigVariables(command, pluginOpts)
+  }
+
+  // Step 4: Windows .sh 自动 prepend bash
+  if (isWindows && !isPowerShell && command.trim().match(/\.sh(\s|$|")/)) {
+    if (!command.trim().startsWith('bash ')) {
+      command = `bash ${command}`
+    }
+  }
+
+  // Step 5: CLAUDE_CODE_SHELL_PREFIX 包装
+  const finalCommand = !isPowerShell && process.env.CLAUDE_CODE_SHELL_PREFIX
+    ? formatShellPrefixCommand(process.env.CLAUDE_CODE_SHELL_PREFIX, command)
+    : command
+
+  // Step 6: 构建 env vars
+  const envVars = {
+    ...subprocessEnv(),
+    CLAUDE_PROJECT_DIR: toHookPath(projectDir),
+    CLAUDE_ENV_FILE: getHookEnvFilePath(hookIndex),  // hook 写入 env var 定义
+  }
+
+  // Step 7: 执行 shell 命令
+  const shellCommand = wrapSpawn({
+    command: finalCommand,
+    shell: isPowerShell ? 'pwsh' : undefined,
+    signal: abortSignal,
+    timeoutMs: hook.timeout ? hook.timeout * 1000 : timeoutMs,
+    env: envVars,
+    stdin: jsonInput,  // hook input 作为 stdin
+  })
+
+  const result = await shellCommand.result
+
+  // Step 8: 处理异步 hook
+  if (parsed.json.async === true) {
+    executeInBackground({ processId, hookId, shellCommand, asyncResponse: parsed.json, ... })
+    return { stdout: '', stderr: '', output: '', status: 0, backgrounded: true }
+  }
+
+  // Step 9: 返回结果
+  return {
+    stdout: shellCommand.taskOutput.getStdout(),
+    stderr: shellCommand.taskOutput.getStderr(),
+    output: stdout + stderr,
+    status: result.code,
+    aborted: result.aborted,
+  }
+}
+```
+
+**AsyncHookRegistry 实现**:
+
+```text
+// 全局注册表
+const pendingHooks = new Map<string, PendingAsyncHook>()
+
+function registerPendingAsyncHook({ processId, hookId, asyncResponse, ... }): void {
+  const timeout = asyncResponse.asyncTimeout || 15000  // 默认 15s
+
+  // 启动进度轮询（每秒 emit progress event）
+  const stopProgressInterval = startHookProgressInterval({ hookId, getOutput: ... })
+
+  pendingHooks.set(processId, {
+    processId, hookId, hookName, hookEvent, command,
+    startTime: Date.now(),
+    timeout,
+    responseAttachmentSent: false,
+    shellCommand,
+    stopProgressInterval,
+  })
+}
+
+async function checkForAsyncHookResponses(): Promise<Array<{
+  processId, response, hookName, stdout, stderr, exitCode
+}>> {
+  const responses = []
+  const hooks = Array.from(pendingHooks.values())
+
+  for (const hook of hooks) {
+    if (hook.shellCommand.status !== 'completed') continue
+
+    const stdout = await hook.shellCommand.taskOutput.getStdout()
+    if (hook.responseAttachmentSent || !stdout.trim()) {
+      pendingHooks.delete(hook.processId)
+      continue
+    }
+
+    // 解析 stdout 中的 JSON（跳过 async 行）
+    for (const line of stdout.split('\n')) {
+      if (line.trim().startsWith('{')) {
+        const parsed = jsonParse(line.trim())
+        if (!('async' in parsed)) {
+          response = parsed
+          break
+        }
+      }
+    }
+
+    hook.responseAttachmentSent = true
+    await finalizeHook(hook, exitCode, outcome)
+    responses.push({ processId, response, ... })
+    pendingHooks.delete(hook.processId)
+  }
+
+  return responses
+}
+
+async function finalizePendingAsyncHooks(): Promise<void> {
+  for (const hook of pendingHooks.values()) {
+    if (hook.shellCommand?.status === 'completed') {
+      await finalizeHook(hook, result.code, 'success')
+    } else {
+      hook.shellCommand?.kill()
+      await finalizeHook(hook, 1, 'cancelled')
+    }
+  }
+  pendingHooks.clear()
+}
+```
+
+**processHookJSONOutput 实现**:
+
+```text
+function processHookJSONOutput({ json, command, hookName, ... }): Partial<HookResult> {
+  const result: Partial<HookResult> = {}
+
+  // Step 1: continue 字段
+  if (json.continue === false) {
+    result.preventContinuation = true
+    if (json.stopReason) result.stopReason = json.stopReason
+  }
+
+  // Step 2: decision 字段（approve/block）
+  if (json.decision) {
+    switch (json.decision) {
+      case 'approve': result.permissionBehavior = 'allow'
+      case 'block':
+        result.permissionBehavior = 'deny'
+        result.blockingError = { blockingError: json.reason || 'Blocked by hook', command }
+    }
+  }
+
+  // Step 3: hookSpecificOutput（按事件类型）
+  if (json.hookSpecificOutput) {
+    switch (json.hookSpecificOutput.hookEventName) {
+      case 'PreToolUse':
+        if (json.hookSpecificOutput.permissionDecision) {
+          result.permissionBehavior = json.hookSpecificOutput.permissionDecision
+        }
+        if (json.hookSpecificOutput.updatedInput) {
+          result.updatedInput = json.hookSpecificOutput.updatedInput
+        }
+        result.additionalContext = json.hookSpecificOutput.additionalContext
+        break
+
+      case 'SessionStart':
+        result.initialUserMessage = json.hookSpecificOutput.initialUserMessage
+        result.watchPaths = json.hookSpecificOutput.watchPaths  // FileChanged 监控路径
+        break
+
+      case 'PostToolUse':
+        result.updatedMCPToolOutput = json.hookSpecificOutput.updatedMCPToolOutput
+        break
+
+      case 'PermissionRequest':
+        result.permissionRequestResult = json.hookSpecificOutput.decision
+        break
+      ...
+    }
+  }
+
+  // Step 4: 创建 attachment message
+  result.message = result.blockingError
+    ? createAttachmentMessage({ type: 'hook_blocking_error', ... })
+    : createAttachmentMessage({ type: 'hook_success', content: '', ... })
+
+  return result
+}
+```
+
+### 边界条件
+
+**1. Exit Code 语义**
+
+- `exit 0` → success
+- `exit 2` → **blocking error**（约定：阻塞后续流程）
+- 其他 → non_blocking_error
+
+设计原因：允许 hook 通过 exit code 控制流程，无需解析 JSON。
+
+**2. JSON 输出验证**
+
+使用 Zod schema 验证：
+- 无效 JSON → 视为 plain text，outcome 为 `non_blocking_error`
+- schema mismatch → 记录 validationError，继续执行（不阻塞）
+
+Fail-open 设计：hook 错误不应阻止主流程。
+
+**3. Matcher 通配符匹配**
+
+`matchesPattern(matchQuery, matcher)`:
+- `matcher: "Bash"` → 精确匹配 `tool_name: "Bash"`
+- `matcher: "Bash(git *)"` → 正则匹配 `tool_name` + `input.command`
+- 无 matcher → 匹配所有事件
+
+**4. Hook Deduplication**
+
+同类型 hook 按 command/prompt/url 去重：
+- Key: `pluginRoot + command` (namespaced)
+- 不同 plugin 可有相同 command（不冲突）
+- 同一 plugin 重复定义 → 后者覆盖
+
+**5. 异步 Hook 超时**
+
+- 默认 `asyncTimeout: 15000` (15s)
+- 超时后 hook 继续运行，但 progress interval 停止
+- `checkForAsyncHookResponses()` 检查完成状态
+
+**6. Workspace Trust 安全**
+
+`shouldSkipHookDueToTrust()` 检查：
+- Interactive mode → 必须 trust accepted
+- Non-interactive (SDK) → 信任隐式，跳过检查
+
+历史漏洞：SessionEnd/SubagentStop 在 trust dialog 前执行。
+
+**7. Internal Hook 快速路径**
+
+全部为 internal callback 时：
+- 跳过 JSON stringify（无 command hooks）
+- 跳过 span/progress/emitHookStarted
+- 直接调用 callback，测量总耗时
+
+优化：减少 ~70% overhead（PostToolUse internal hooks 常见）。
+
+**8. Hook Input 惰性 Stringify**
+
+`getJsonInput()`:
+- 第一次调用时 stringify
+- 缓存结果，共享给所有 command/prompt hooks
+- 错误时 yield non_blocking_error，不阻塞其他 hooks
+
+**9. 进度消息 Yield**
+
+每个 hook yield 一个 progress message：
+- `{ type: 'progress', data: { type: 'hook_progress', hookEvent, hookName, command } }`
+- UI 显示 "Running hook: ..."
+- 不影响聚合结果
+
+**10. Abort Signal 组合**
+
+`createCombinedAbortSignal(signal, { timeoutMs })`:
+- 外部 signal（用户取消）
+- 内部 timeout（hook 超时）
+- 任一触发则 abort
+
+cleanup() 在 finally 中调用，确保资源释放。
+
+### 性能考量
+
+**1. Internal Hook 快速路径**
+
+测量：6.01µs → ~1.8µs per PostToolUse hit (-70%)
+
+优化点：
+- 跳过 JSON stringify
+- 跳过 span/progress/emitHookResponse
+- 直接调用 callback（无 shell spawn）
+
+**2. Hook Input 惰性 Stringify**
+
+共享给所有 command hooks：
+- N hooks → 1 stringify
+- callback hooks 不触发 stringify
+
+**3. 并行执行**
+
+所有 hooks 并行执行（Promise.all 风格）：
+- `all(hookPromises)` 遍历 generator
+- 每个 hook 有独立 timeout
+- 不互相阻塞
+
+**4. Deduplication 快速路径**
+
+全部 callback/function 时跳过：
+- 6-pass filter + 4×Map + 4×Array.from
+- 44x faster in microbench
+
+**5. 进度轮询 Interval**
+
+`startHookProgressInterval`:
+- 默认 1000ms 轮询
+- `interval.unref()` 防止阻塞进程退出
+- output 未变化时跳过 emit
+
+**6. Shell 命令执行**
+
+`wrapSpawn` 使用 `child_process.spawn`：
+- 流式 stdout/stderr（实时捕获）
+- TaskOutput 累积数据
+- background mode 持续运行
+
+**7. Hook Span Tracing**
+
+Beta tracing 启用时：
+- `startHookSpan` / `endHookSpan` 记录 OTel event
+- 生产环境默认关闭（减少 overhead）
+
+**8. Analytics 采样**
+
+`tengu_run_hook` 只记录 user hooks：
+- internal hooks 不计入（不影响 metrics）
+- hookTypeCounts 分类统计
+
+**9. Windows 路径缓存**
+
+`windowsPathToPosixPath` LRU-500 缓存：
+- `C:\Users\foo` → `/c/Users/foo`
+- 重复转换无开销
+
+**10. Event Handler Pending Buffer**
+
+`pendingEvents` 数组：
+- handler 注册前的事件暂存
+- MAX_PENDING_EVENTS = 100（防止内存泄漏）
+- 注册后批量发送
 
 ## Review 历史
 
