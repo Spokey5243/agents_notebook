@@ -525,6 +525,24 @@ function assembleToolPool(permissionContext, mcpTools) {
 调用阶段的步骤顺序验证正确：
 - validateInput → checkPermissions → canUseTool → call → mapToolResultToToolResultBlockParam
 
+### 2026-04-19 - L3 Review
+
+#### buildTool 默认值验证
+源码 `TOOL_DEFAULTS` 定义正确：
+- `isConcurrencySafe: () => false` ✅ (fail-closed 设计)
+- `isReadOnly: () => false` ✅ (默认视为写操作)
+- `checkPermissions: (input) => ({ behavior: 'allow', updatedInput: input })` ✅
+
+#### getTools 过滤流程验证
+过滤顺序验证正确：
+1. Simple mode 分支 → 2. getAllBaseTools → 3. 排除特殊工具 → 4. deny rules → 5. REPL mode → 6. isEnabled
+
+#### Prompt Cache 稳定性设计
+源码注释确认 cache breakpoint 机制：
+- 服务端 `claude_code_system_cache_policy` 在最后一个内置工具后放置 cache breakpoint
+- 内置工具排序后保持连续前缀，MCP 工具追加在后
+- `uniqBy` 保持插入顺序，内置工具优先
+
 ## 疑问与待查
 
 - [ ] `ToolUseContext` 的完整字段列表？
