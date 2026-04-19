@@ -20,18 +20,18 @@
 - `P`: 进度数据类型（ToolProgressData 子类型）
 
 **Tool.call 参数**:
-- `args`: z.infer<Input> — 工具输入参数
+- `args`: `z.infer<Input>` — 工具输入参数
 - `context`: ToolUseContext — 工具执行上下文
 - `canUseTool`: CanUseToolFn — 权限检查函数
 - `parentMessage`: AssistantMessage — 父消息（包含 tool_use）
-- `onProgress`: ToolCallProgress<P>? — 进度回调
+- `onProgress`: `ToolCallProgress<P>`? — 进度回调
 
 **getAllBaseTools 参数**:
 - 无参数，根据环境变量和 feature flags 返回工具列表
 
 ### 输出
 
-**ToolResult<T>**:
+**`ToolResult<T>`**:
 - `data: T` — 工具输出数据
 - `newMessages`: Message[]? — 新增消息（如权限提示）
 - `contextModifier`: (context) => context? — 上下文修改器
@@ -71,8 +71,8 @@
 - `getEmptyToolPermissionContext()` → 返回空权限上下文
 
 **权限相关**:
-- `checkPermissions()` → 返回 Promise<PermissionResult>，工具权限检查
-- `validateInput()` → 返回 Promise<ValidationResult>，输入验证
+- `checkPermissions()` → 返回 `Promise<PermissionResult>`，工具权限检查
+- `validateInput()` → 返回 `Promise<ValidationResult>`，输入验证
 
 **其他**:
 - `isConcurrencySafe()` → 返回 boolean，判断是否并发安全
@@ -181,12 +181,12 @@
 #### 其余内容验证
 以下内容经源码验证全部正确：
 - Tool.call 参数签名 ✅
-- ToolResult<T> 结构 ✅
+- `ToolResult<T>` 结构 ✅
 - TOOL_DEFAULTS 默认值（isConcurrencySafe=false 等） ✅
 - aliases/toolMatchesName 机制 ✅
 - shouldDefer/alwaysLoad 延迟加载 ✅
 - MCP 兼容（isMcp, mcpInfo, inputJSONSchema） ✅
-- 进度回调（ToolCallProgress<P>） ✅
+- 进度回调（`ToolCallProgress<P>`） ✅
 - 结果渲染（mapToolResultToToolResultBlockParam） ✅
 
 ## 疑问与待查
