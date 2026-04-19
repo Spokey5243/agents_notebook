@@ -34,7 +34,7 @@
 ### 输出
 
 **CompactionResult**:
-- `summaryMessages`: Message[] — 摘要消息列表
+- `summaryMessages`: UserMessage[] — 摘要消息列表（用户消息数组）
 - `attachments`: AttachmentMessage[] — 压缩后重新注入的附件
 - `hookResults`: HookResultMessage[] — hook 结果消息
 - `messagesToKeep`: Message[]? — 需保留的消息
@@ -144,7 +144,12 @@ MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES = 3 // 连续失败最大次数（熔断）
 
 ## Review 历史
 
-（待 review）
+### 2026-04-19 - L1 Review
+
+#### summaryMessages 类型
+~~`summaryMessages`: Message[] — 摘要消息列表~~
+> ⚠️ **类型简化**: 源码定义为 `UserMessage[]`，是 Message 的子类型。
+> **实际类型**: `UserMessage[]`（用户消息数组，不含其他消息类型）
 
 ## 疑问与待查
 
