@@ -2,7 +2,7 @@
 
 > 项目: [[claude-code-best]]
 > 文件: src/query.ts
-> 状态: L2-in-progress
+> 状态: L2-complete
 
 ## L1 - 黑盒视角
 
@@ -249,6 +249,16 @@ query() {
 > - `'stop_hook_prevented'` — stop hook 阻止继续
 > - `'hook_stopped'` — hook 停止
 > - `'image_error'` — 图片错误
+
+### 2026-04-19 - L2 Review
+
+#### isWithheldMaxOutputTokens - 类型守卫
+
+表格描述："判断是否为 withheld max_output_tokens 错误"
+
+> ⚠️ **补充说明**: 该函数是 TypeScript **类型守卫**（Type Guard）。返回类型 `msg is AssistantMessage` 表示：当函数返回 `true` 时，TypeScript 会将 `msg` 的类型从 `Message | StreamEvent | undefined` 收窄为 `AssistantMessage`。
+>
+> **实现逻辑**: `msg?.type === 'assistant' && msg.apiError === 'max_output_tokens'`
 
 ---
 
