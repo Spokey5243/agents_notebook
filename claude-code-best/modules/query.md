@@ -303,15 +303,15 @@ queryLoop(params, consumedCommandUuids) {
 
 7 个 continue 点，每个代表一种恢复路径：
 
-| 行号 | transition.reason | 触发条件 | 说明 |
-|------|-------------------|----------|------|
-| 1173 | (fallback) | FallbackTriggeredError | 切换备用模型后重试 |
-| 1338 | `collapse_drain_retry` | prompt-too-long + collapse drain 成功 | 上下文折叠恢复后重试 |
-| 1388 | `reactive_compact_retry` | prompt-too-long + reactive compact 成功 | 响应式压缩后重试 |
-| 1443 | `max_output_tokens_escalate` | max_output_tokens + 首次触发 | 升级输出 token 限制后重试 |
-| 1474 | `max_output_tokens_recovery` | max_output_tokens + 恢复计数 < 3 | 添加恢复消息后重试 |
-| 1528 | `stop_hook_blocking` | stop hook 返回 blockingErrors | stop hook 阻塞后重试 |
-| 1563 | `token_budget_continuation` | token 预算达到阈值 | token 预算继续 |
+| 行号   | transition.reason            | 触发条件                                  | 说明               |
+| ---- | ---------------------------- | ------------------------------------- | ---------------- |
+| 1173 | (fallback)                   | FallbackTriggeredError                | 切换备用模型后重试        |
+| 1338 | `collapse_drain_retry`       | prompt-too-long + collapse drain 成功   | 上下文折叠恢复后重试       |
+| 1388 | `reactive_compact_retry`     | prompt-too-long + reactive compact 成功 | 响应式压缩后重试         |
+| 1443 | `max_output_tokens_escalate` | max_output_tokens + 首次触发              | 升级输出 token 限制后重试 |
+| 1474 | `max_output_tokens_recovery` | max_output_tokens + 恢复计数 < 3          | 添加恢复消息后重试        |
+| 1528 | `stop_hook_blocking`         | stop hook 返回 blockingErrors           | stop hook 阻塞后重试  |
+| 1563 | `token_budget_continuation`  | token 预算达到阈值                          | token 预算继续       |
 
 ### Return 点（退出循环）
 
