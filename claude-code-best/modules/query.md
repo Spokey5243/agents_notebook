@@ -2,7 +2,7 @@
 
 > 项目: [[claude-code-best]]
 > 文件: src/query.ts
-> 状态: L1-complete
+> 状态: L2-in-progress
 
 ## L1 - 黑盒视角
 
@@ -120,17 +120,91 @@
 
 ## L2 - 接口视角
 
-（待 L1 review 完成后填充）
-
 ### 核心函数
 
-| 函数名 | 作用 | 关键参数 |
-|--------|------|----------|
+| 函数名                                                             | 作用                                  | 关键参数                                                                    |
+| --------------------------------------------------------------- | ----------------------------------- | ----------------------------------------------------------------------- |
+| `query(params)`                                                 | 主入口，导出的异步生成器                        | `params: QueryParams` — 包含 messages、systemPrompt、toolUseContext 等       |
+| `queryLoop(params, consumedCommandUuids)`                       | 内部循环，实际执行逻辑                         | `params: QueryParams`, `consumedCommandUuids: string[]` — 已消费命令 UUID 列表 |
+| `yieldMissingToolResultBlocks(assistantMessages, errorMessage)` | 生成缺失的 tool_result 消息                | `assistantMessages: AssistantMessage[]`, `errorMessage: string`         |
+| `isWithheldMaxOutputTokens(msg)`                                | 判断是否为 withheld max_output_tokens 错误 | `msg: Message \| StreamEvent \| undefined`                              |
 
 ### 核心类型
 
 ```typescript
-// 类型摘录
+// QueryParams - 主入口参数类型
+export type QueryParams = {
+  messages: Message[]
+  systemPrompt: SystemPrompt
+  userContext: { [k: string]: string }
+  systemContext: { [k: string]: string }
+  canUseTool: CanUseToolFn
+  toolUseContext: ToolUseContext
+  fallbackModel?: string
+  querySource: QuerySource
+  maxOutputTokensOverride?: number
+  maxTurns?: number
+  skipCacheWrite?: boolean
+  taskBudget?: { total: number }
+  deps?: QueryDeps
+}
+
+// State - 循环状态类型（mutable）
+type State = {
+  messages: Message[]
+  toolUseContext: ToolUseContext
+  autoCompactTracking: AutoCompactTrackingState | undefined
+  maxOutputTokensRecoveryCount: number
+  hasAttemptedReactiveCompact: boolean
+  maxOutputTokensOverride: number | undefined
+  pendingToolUseSummary: Promise<ToolUseSummaryMessage | null> | undefined
+  stopHookActive: boolean | undefined
+  turnCount: number
+  transition: Continue | undefined
+}
+
+// query 函数签名
+export async function* query(
+  params: QueryParams,
+): AsyncGenerator<
+  | StreamEvent
+  | RequestStartEvent
+  | Message
+  | TombstoneMessage
+  | ToolUseSummaryMessage,
+  Terminal
+>
+
+// queryLoop 函数签名
+async function* queryLoop(
+  params: QueryParams,
+  consumedCommandUuids: string[],
+): AsyncGenerator<
+  | StreamEvent
+  | RequestStartEvent
+  | Message
+  | TombstoneMessage
+  | ToolUseSummaryMessage,
+  Terminal
+>
+```
+
+### 函数调用关系
+
+```
+query(params)
+  ├── ownsTrace = !params.toolUseContext.langfuseTrace
+  ├── langfuseTrace = params.toolUseContext.langfuseTrace ?? createTrace() ?? null
+  └── terminal = yield* queryLoop(params, consumedCommandUuids)  ← 委托生成器
+          └── finally: endTrace(langfuseTrace)
+  └── notifyCommandLifecycle(uuid, 'completed')
+  └── return terminal
+```
+
+### 常量
+
+```typescript
+const MAX_OUTPUT_TOKENS_RECOVERY_LIMIT = 3  // max_output_tokens 恢复最大尝试次数
 ```
 
 ## L3 - 实现视角
