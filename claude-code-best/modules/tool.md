@@ -154,7 +154,188 @@
 
 ## L2 - 接口视角
 
-（待 L1 review 完成后填充）
+### 核心函数
+
+| 函数名 | 作用 | 关键参数 | 返回类型 |
+|--------|------|----------|----------|
+| `toolMatchesName()` | 检查工具名匹配（含别名） | `tool`, `name` | `boolean` |
+| `findToolByName()` | 按名称查找工具 | `tools`, `name` | `Tool | undefined` |
+| `getAllBaseTools()` | 获取所有基础工具 | 无 | `Tools` |
+| `getTools()` | 获取可用工具（权限过滤） | `permissionContext` | `Tools` |
+| `filterToolsByDenyRules()` | 按拒绝规则过滤 | `tools`, `permissionContext` | `T[]` |
+| `Tool.call()` | 执行工具 | `args`, `context`, `canUseTool`, `parentMessage`, `onProgress` | `Promise<ToolResult<Output>>` |
+| `Tool.checkPermissions()` | 工具权限检查 | `input`, `context` | `Promise<PermissionResult>` |
+| `Tool.validateInput()` | 输入验证 | `input`, `context` | `Promise<ValidationResult>` |
+| `Tool.description()` | 生成工具描述 | `input`, `options` | `Promise<string>` |
+| `Tool.prompt()` | 生成工具提示词 | `options` | `Promise<string>` |
+
+### 核心类型
+
+```typescript
+// Tool 泛型接口
+export type Tool<
+  Input extends AnyObject = AnyObject,
+  Output = unknown,
+  P extends ToolProgressData = ToolProgressData
+> = {
+  name: string
+  aliases?: string[]
+  inputSchema: Input
+  inputJSONSchema?: ToolInputJSONSchema  // MCP 工具用
+  outputSchema?: z.ZodType<unknown>
+  maxResultSizeChars: number
+  
+  // 核心方法
+  call(args, context, canUseTool, parentMessage, onProgress): Promise<ToolResult<Output>>
+  description(input, options): Promise<string>
+  prompt(options): Promise<string>
+  checkPermissions(input, context): Promise<PermissionResult>
+  validateInput?(input, context): Promise<ValidationResult>
+  
+  // 属性判断方法
+  isConcurrencySafe(input): boolean
+  isEnabled(): boolean
+  isReadOnly(input): boolean
+  isDestructive?(input): boolean | undefined
+  interruptBehavior?(): 'cancel' | 'block'
+  
+  // 延迟加载
+  shouldDefer?: boolean
+  alwaysLoad?: boolean
+  
+  // MCP 兼容
+  isMcp?: boolean
+  mcpInfo?: { serverName: string; toolName: string }
+  
+  // 结果渲染
+  mapToolResultToToolResultBlockParam(content, toolUseID): ToolResultBlockParam
+  renderToolResultMessage?(content, progressMessages, options): React.ReactNode
+  renderToolUseMessage(input, options): React.ReactNode
+  
+  // 其他
+  getPath?(input): string
+  userFacingName(input): string
+  getActivityDescription?(input): string | null
+  toAutoClassifierInput(input): unknown
+}
+
+// Tools 类型（工具集合）
+export type Tools = readonly Tool[]
+
+// ToolResult 结构
+export type ToolResult<T> = {
+  data: T
+  newMessages?: (UserMessage | AssistantMessage | AttachmentMessage | SystemMessage)[]
+  contextModifier?: (context: ToolUseContext) => ToolUseContext
+  mcpMeta?: { _meta?: Record<string, unknown>; structuredContent?: Record<string, unknown> }
+}
+
+// ValidationResult
+export type ValidationResult =
+  | { result: true }
+  | { result: false; message: string; errorCode: number }
+
+// ToolCallProgress 回调类型
+export type ToolCallProgress<P extends ToolProgressData = ToolProgressData> = 
+  (progress: ToolProgress<P>) => void
+
+// ToolProgress 进度数据
+export type ToolProgress<P extends ToolProgressData> = {
+  toolUseID: string
+  data: P
+}
+
+// AnyObject（Zod schema 约束）
+export type AnyObject = z.ZodType<{ [key: string]: unknown }>
+```
+
+### ToolUseContext 关键字段
+
+```typescript
+export type ToolUseContext = {
+  // 配置选项
+  options: {
+    commands: Command[]
+    debug: boolean
+    mainLoopModel: string
+    tools: Tools
+    verbose: boolean
+    thinkingConfig: ThinkingConfig
+    mcpClients: MCPServerConnection[]
+    mcpResources: Record<string, ServerResource[]>
+    isNonInteractiveSession: boolean
+    agentDefinitions: AgentDefinitionsResult
+    maxBudgetUsd?: number
+    customSystemPrompt?: string
+    appendSystemPrompt?: string
+    querySource?: QuerySource
+    refreshTools?: () => Tools
+  }
+  
+  // 核心状态
+  abortController: AbortController
+  messages: Message[]
+  readFileState: FileStateCache
+  getAppState(): AppState
+  setAppState(f: (prev: AppState) => AppState): void
+  
+  // UI 回调
+  setToolJSX?: SetToolJSXFn
+  addNotification?: (notif: Notification) => void
+  appendSystemMessage?: (msg: SystemMessage) => void
+  sendOSNotification?: (opts) => void
+  setStreamMode?: (mode: SpinnerMode) => void
+  onCompactProgress?: (event: CompactProgressEvent) => void
+  
+  // 权限相关
+  setInProgressToolUseIDs: (f: (prev: Set<string>) => Set<string>) => void
+  setHasInterruptibleToolInProgress?: (v: boolean) => void
+  requireCanUseTool?: boolean
+  toolDecisions?: Map<string, { source: string; decision: 'accept' | 'reject'; timestamp: number }>
+  
+  // 进度回调请求
+  requestPrompt?: (sourceName: string) => (request: PromptRequest) => Promise<PromptResponse>
+  
+  // Agent 相关
+  agentId?: AgentId
+  agentType?: string
+  
+  // 文件历史和归属
+  updateFileHistoryState: (updater) => void
+  updateAttributionState: (updater) => void
+  
+  // 其他
+  fileReadingLimits?: { maxTokens?: number; maxSizeBytes?: number }
+  globLimits?: { maxResults?: number }
+  queryTracking?: QueryChainTracking
+  langfuseTrace?: LangfuseSpan | null
+  contentReplacementState?: ContentReplacementState
+  renderedSystemPrompt?: SystemPrompt
+}
+```
+
+### 工具生命周期
+
+```text
+1. 注册阶段
+   getAllBaseTools() → 根据环境/feature 组装工具列表
+   getTools(permissionContext) → 权限过滤 → API 请求的 tools 参数
+
+2. 调用阶段
+   API 返回 tool_use → findToolByName() 查找
+   → validateInput() 验证输入
+   → checkPermissions() 权限检查
+   → canUseTool() hook/用户确认
+   → call() 执行工具
+   → onProgress 进度回调（可选）
+   → mapToolResultToToolResultBlockParam() 转换结果
+   → tool_result 发送给 API
+
+3. 渲染阶段
+   renderToolUseMessage() 渲染 tool_use 消息
+   renderToolUseProgressMessage() 渲染进度（可选）
+   renderToolResultMessage() 渲染 tool_result（可选）
+```
 
 ## L3 - 实现视角
 
